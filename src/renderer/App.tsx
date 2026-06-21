@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import {
   Activity,
   Check,
   CircleAlert,
+  CircleHelp,
   FolderOpen,
   Gauge,
   MessageSquare,
@@ -185,21 +186,29 @@ export function App({ api }: { api?: LauncherApi } = {}) {
         </div>
 
         <div className="topbar__actions">
-          <button className="btn btn--primary" onClick={() => run(() => apiClient!.startAll())}>
-            <Play size={15} />
-            Start all
-          </button>
-          <button className="btn btn--danger" onClick={stopAll}>
-            <Square size={15} />
-            Stop all
-          </button>
+          <ActionWithHelp help="Enabled olan tüm hesapları sırayla bağlar. Settings içindeki connect stagger değeri iki bağlantı arasına bekleme koyar.">
+            <button className="btn btn--primary" onClick={() => run(() => apiClient!.startAll())}>
+              <Play size={15} />
+              Start all
+            </button>
+          </ActionWithHelp>
+          <ActionWithHelp help="Çalışan tüm oturumları kapatır ve rutinleri durdurur. Onay ayarı açıksa önce senden onay ister.">
+            <button className="btn btn--danger" onClick={stopAll}>
+              <Square size={15} />
+              Stop all
+            </button>
+          </ActionWithHelp>
           <span className="topbar__divider" />
-          <button className="icon-btn" title="Open data folder" onClick={() => run(() => apiClient!.openUserData())}>
-            <FolderOpen size={16} />
-          </button>
-          <button className="icon-btn" title="Settings" onClick={() => setSettingsOpen(true)}>
-            <Settings size={16} />
-          </button>
+          <ActionWithHelp help="ChunkKeeper'ın profil ve oturum dosyalarını tuttuğu yerel veri klasörünü açar.">
+            <button className="icon-btn" title="Open data folder" onClick={() => run(() => apiClient!.openUserData())}>
+              <FolderOpen size={16} />
+            </button>
+          </ActionWithHelp>
+          <ActionWithHelp help="Başlangıç, görünüm ve yeni hesap varsayılanlarını değiştirdiğin ayar penceresini açar.">
+            <button className="icon-btn" title="Settings" onClick={() => setSettingsOpen(true)}>
+              <Settings size={16} />
+            </button>
+          </ActionWithHelp>
         </div>
 
         {showWindowControls ? (
@@ -236,16 +245,18 @@ export function App({ api }: { api?: LauncherApi } = {}) {
             {state.profiles.length === 0 ? <p className="sidebar__empty">No accounts yet.</p> : null}
           </div>
           <div className="sidebar__foot">
-            <button
-              className="btn btn--block"
-              onClick={() => {
-                setDraft(createNewAccountDraft(draft, state.settings, state.profiles.length + 1));
-                setProfileEditorOpen(true);
-              }}
-            >
-              <Plus size={15} />
-              New account
-            </button>
+            <ActionWithHelp block help="Seçili profilden güvenli ayarları kopyalayıp yeni bir hesap taslağı açar. Şifre alanı özellikle boş bırakılır.">
+              <button
+                className="btn btn--block"
+                onClick={() => {
+                  setDraft(createNewAccountDraft(draft, state.settings, state.profiles.length + 1));
+                  setProfileEditorOpen(true);
+                }}
+              >
+                <Plus size={15} />
+                New account
+              </button>
+            </ActionWithHelp>
           </div>
         </aside>
 
@@ -270,30 +281,36 @@ export function App({ api }: { api?: LauncherApi } = {}) {
               </div>
               <div className="toolbar__actions">
                 <StatusPill state={liveState} label={selectedSession?.statusMessage ?? STATE_LABEL[liveState]} />
-                <button
-                  className="btn btn--primary"
-                  disabled={!draft.id || isLive}
-                  onClick={() => draft.id && run(() => apiClient!.connect(draft.id))}
-                >
-                  <Play size={15} />
-                  Connect
-                </button>
-                <button
-                  className="btn"
-                  disabled={!draft.id || liveState === 'offline' || liveState === 'idle'}
-                  onClick={() => draft.id && run(() => apiClient!.disconnect(draft.id))}
-                >
-                  <Square size={15} />
-                  Disconnect
-                </button>
-                <button
-                  className="icon-btn icon-btn--danger"
-                  title="Delete selected profile"
-                  disabled={!draft.id}
-                  onClick={() => draft.id && run(() => apiClient!.deleteProfile(draft.id))}
-                >
-                  <Trash2 size={15} />
-                </button>
+                <ActionWithHelp help="Seçili hesabı bağlar. Join flow açıksa önce lobby auth/register komutunu, sonra transfer komutunu çalıştırır; AFK rutini en son başlar.">
+                  <button
+                    className="btn btn--primary"
+                    disabled={!draft.id || isLive}
+                    onClick={() => draft.id && run(() => apiClient!.connect(draft.id))}
+                  >
+                    <Play size={15} />
+                    Connect
+                  </button>
+                </ActionWithHelp>
+                <ActionWithHelp help="Seçili oturumu bilinçli olarak kapatır. Bu işlem reconnect sayılmaz, bu yüzden otomatik yeniden bağlanma tetiklenmez.">
+                  <button
+                    className="btn"
+                    disabled={!draft.id || liveState === 'offline' || liveState === 'idle'}
+                    onClick={() => draft.id && run(() => apiClient!.disconnect(draft.id))}
+                  >
+                    <Square size={15} />
+                    Disconnect
+                  </button>
+                </ActionWithHelp>
+                <ActionWithHelp help="Seçili profili yerel listeden siler. Çalışan oturum varsa önce kapatman daha temiz olur.">
+                  <button
+                    className="icon-btn icon-btn--danger"
+                    title="Delete selected profile"
+                    disabled={!draft.id}
+                    onClick={() => draft.id && run(() => apiClient!.deleteProfile(draft.id))}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </ActionWithHelp>
               </div>
             </div>
           </section>
@@ -421,20 +438,54 @@ function WindowControls({
 
   return (
     <div className="window-controls" aria-label="Window controls">
-      <button className="window-control" title="Minimize" onClick={() => runWindowAction(api.minimizeWindow)}>
-        <Minus size={15} />
-      </button>
-      <button
-        className="window-control"
-        title={isMaximized ? 'Restore' : 'Maximize'}
-        onClick={() => runWindowAction(api.toggleMaximizeWindow)}
-      >
-        {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-      </button>
-      <button className="window-control window-control--close" title="Close" onClick={() => runWindowAction(api.closeWindow)}>
-        <X size={15} />
-      </button>
+      <ActionWithHelp help="Pencereyi küçültür. Uygulama arka planda açık kalır.">
+        <button className="window-control" title="Minimize" onClick={() => runWindowAction(api.minimizeWindow)}>
+          <Minus size={15} />
+        </button>
+      </ActionWithHelp>
+      <ActionWithHelp help="Pencereyi büyütür veya eski boyutuna döndürür. Oturumları etkilemez.">
+        <button
+          className="window-control"
+          title={isMaximized ? 'Restore' : 'Maximize'}
+          onClick={() => runWindowAction(api.toggleMaximizeWindow)}
+        >
+          {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </button>
+      </ActionWithHelp>
+      <ActionWithHelp help="Pencereyi kapatır. Çalışan oturum davranışı işletim sistemi ve uygulama ayarlarına göre devam eder.">
+        <button className="window-control window-control--close" title="Close" onClick={() => runWindowAction(api.closeWindow)}>
+          <X size={15} />
+        </button>
+      </ActionWithHelp>
     </div>
+  );
+}
+
+function ActionWithHelp({
+  children,
+  help,
+  block = false
+}: {
+  children: React.ReactNode;
+  help: string;
+  block?: boolean;
+}) {
+  return (
+    <span className={`control-with-help ${block ? 'control-with-help--block' : ''}`}>
+      {children}
+      <HelpTip text={help} />
+    </span>
+  );
+}
+
+function HelpTip({ text }: { text: string }) {
+  return (
+    <span className="help-tip" tabIndex={0} aria-label={text}>
+      <CircleHelp size={13} aria-hidden="true" />
+      <span className="help-tip__bubble" role="tooltip">
+        {text}
+      </span>
+    </span>
   );
 }
 
@@ -452,14 +503,18 @@ function ServerProfileSummary({
       <div className="panel__head">
         <span className="panel__title">Server profile</span>
         <div className="panel__actions">
-          <button className="btn btn--sm" onClick={onEdit}>
-            <Pencil size={14} />
-            Edit profile
-          </button>
-          <button className="btn btn--sm" onClick={onSave}>
-            <Save size={14} />
-            Save profile
-          </button>
+          <ActionWithHelp help="Seçili hesabın kullanıcı adı, sunucu, auth ve reconnect ayarlarını düzenleme penceresinde açar.">
+            <button className="btn btn--sm" onClick={onEdit}>
+              <Pencil size={14} />
+              Edit profile
+            </button>
+          </ActionWithHelp>
+          <ActionWithHelp help="Ekrandaki profil değişikliklerini yerel profile kaydeder. Lobby auth şifresi profil dosyasına yazılmaz.">
+            <button className="btn btn--sm" onClick={onSave}>
+              <Save size={14} />
+              Save profile
+            </button>
+          </ActionWithHelp>
         </div>
       </div>
       <div className="panel__body profile-summary__body">
@@ -550,9 +605,11 @@ function ProfileEditorModal({
             <Pencil size={14} />
             Server profile
           </span>
-          <button className="icon-btn" title="Close profile editor" onClick={onClose}>
-            <X size={16} />
-          </button>
+          <ActionWithHelp help="Değişiklikleri kaydetmeden profil düzenleme penceresini kapatır.">
+            <button className="icon-btn" title="Close profile editor" onClick={onClose}>
+              <X size={16} />
+            </button>
+          </ActionWithHelp>
         </div>
 
         <div className="modal__body profile-editor">
@@ -566,6 +623,7 @@ function ProfileEditorModal({
             </div>
             <Toggle
               label="Enabled"
+              help="Açık hesaplar Start all ile başlatılır. Kapalı hesap listede kalır ama toplu başlatmaya dahil edilmez."
               checked={workingDraft.enabled}
               onChange={(value) => setWorkingDraft({ ...workingDraft, enabled: value })}
             />
@@ -645,6 +703,7 @@ function ProfileEditorModal({
             <div className="toggles">
               <Toggle
                 label="Reconnect enabled"
+                help="Beklenmeyen kopmalarda bu profil için yeniden bağlanma denemelerini açar. Manuel Disconnect bunu tetiklemez."
                 checked={workingDraft.reconnect.enabled}
                 onChange={(value) => updateReconnect({ enabled: value })}
               />
@@ -678,13 +737,17 @@ function ProfileEditorModal({
         </div>
 
         <div className="modal__foot">
-          <button className="btn" onClick={onClose}>
-            Close
-          </button>
-          <button className="btn btn--primary" onClick={() => onSave(workingDraft)}>
-            <Save size={14} />
-            Save profile
-          </button>
+          <ActionWithHelp help="Pencereyi kapatır ve düzenleme taslağını kaydetmez.">
+            <button className="btn" onClick={onClose}>
+              Close
+            </button>
+          </ActionWithHelp>
+          <ActionWithHelp help="Profil ayarlarını kaydeder. Auth password sadece çalışma sırasında kullanılır, profil JSON içine yazılmaz.">
+            <button className="btn btn--primary" onClick={() => onSave(workingDraft)}>
+              <Save size={14} />
+              Save profile
+            </button>
+          </ActionWithHelp>
         </div>
       </div>
     </div>
@@ -704,19 +767,22 @@ function AccountRow({
 }) {
   const state = session?.state ?? 'idle';
   return (
-    <button className={`row ${selected ? 'is-selected' : ''}`} onClick={onSelect}>
-      <span className="avatar">{profile.label.slice(0, 2).toUpperCase()}</span>
-      <span className="row__copy">
-        <strong>{profile.label}</strong>
-        <span>
-          {profile.authMode} · {profile.host}
+    <div className="row-with-help">
+      <button className={`row ${selected ? 'is-selected' : ''}`} onClick={onSelect}>
+        <span className="avatar">{profile.label.slice(0, 2).toUpperCase()}</span>
+        <span className="row__copy">
+          <strong>{profile.label}</strong>
+          <span>
+            {profile.authMode} · {profile.host}
+          </span>
         </span>
-      </span>
-      <span className="row__meta">
-        <i className={`dot dot--${state}`} />
-        <span>{session?.ping ? `${session.ping}ms` : '—'}</span>
-      </span>
-    </button>
+        <span className="row__meta">
+          <i className={`dot dot--${state}`} />
+          <span>{session?.ping ? `${session.ping}ms` : '—'}</span>
+        </span>
+      </button>
+      <HelpTip text="Bu satır profili seçer. Sağdaki durum noktası son bağlantı halini, ping değeri varsa gecikmeyi gösterir." />
+    </div>
   );
 }
 
@@ -781,10 +847,12 @@ function ChatConsole({
           }}
           placeholder="Send a message or command…"
         />
-        <button className="btn btn--primary" onClick={onSend}>
-          <Send size={14} />
-          Send
-        </button>
+        <ActionWithHelp help="Yazdığın mesajı seçili çevrimiçi oturuma chat veya komut olarak gönderir. Enter tuşu da aynı işlemi yapar.">
+          <button className="btn btn--primary" onClick={onSend}>
+            <Send size={14} />
+            Send
+          </button>
+        </ActionWithHelp>
       </div>
     </section>
   );
@@ -857,42 +925,74 @@ function RoutinePanel({
     <section className="panel">
       <div className="panel__head">
         <span className="panel__title">AFK routine</span>
-        <button className="btn btn--sm" onClick={onSave}>
-          <Save size={14} />
-          Save
-        </button>
+        <ActionWithHelp help="AFK routine ve reconnect ayarlarını seçili profile kaydeder.">
+          <button className="btn btn--sm" onClick={onSave}>
+            <Save size={14} />
+            Save
+          </button>
+        </ActionWithHelp>
       </div>
       <div className="panel__body routine__body">
         <div className="toggles">
-          <Toggle label="Random look" checked={routine.randomLook} onChange={(value) => updateRoutine({ randomLook: value })} />
-          <Toggle label="Auto-jump" checked={routine.autoJump} onChange={(value) => updateRoutine({ autoJump: value })} />
-          <Toggle label="Sneak" checked={routine.sneakPulse} onChange={(value) => updateRoutine({ sneakPulse: value })} />
-          <Toggle label="Swing" checked={routine.swingArm} onChange={(value) => updateRoutine({ swingArm: value })} />
+          <Toggle
+            label="Random look"
+            help="Rutin çalıştığında kamerayı küçük rastgele açılarla çevirir. Hareket komutu değildir, sadece bakış yönünü değiştirir."
+            checked={routine.randomLook}
+            onChange={(value) => updateRoutine({ randomLook: value })}
+          />
+          <Toggle
+            label="Auto-jump"
+            help="Rutin seçtiğinde jump tuşuna kısa bir pulse gönderir. Sürekli zıplamaz; sadece seçilen rutin adımında çalışır."
+            checked={routine.autoJump}
+            onChange={(value) => updateRoutine({ autoJump: value })}
+          />
+          <Toggle
+            label="Sneak"
+            help="Rutin seçtiğinde sneak durumunu kısa süre açıp kapatır. Diğer hareket kontrolleriyle birlikte rastgele sırada çalışabilir."
+            checked={routine.sneakPulse}
+            onChange={(value) => updateRoutine({ sneakPulse: value })}
+          />
+          <Toggle
+            label="Swing"
+            help="Rutin seçtiğinde sağ kol swing komutu gönderir. Blok kırma veya hedef seçme davranışı eklemez."
+            checked={routine.swingArm}
+            onChange={(value) => updateRoutine({ swingArm: value })}
+          />
           <Toggle
             label="Chat messages"
+            help="Açıkken listedeki Türkçe mesajlardan birini gönderir. Birden fazla mesaj varsa aynı mesajı art arda tekrarlamamaya çalışır."
             checked={routine.chatHeartbeat}
             onChange={(value) => updateRoutine({ chatHeartbeat: value })}
           />
           <Toggle
             label="Auto-respawn"
+            help="Oturum ölürse respawn isteği gönderir. Sunucu izin verirse karakter tekrar doğar ve rutin devam edebilir."
             checked={routine.autoRespawn}
             onChange={(value) => updateRoutine({ autoRespawn: value })}
           />
           <Toggle
             label="Auto-eat"
+            help="Hunger belirlediğin eşik altına inerse güvenli yiyecek seçip yemeye çalışır. Zararlı yiyecekleri bilerek atlar."
             checked={routine.autoEat}
             onChange={(value) => updateRoutine({ autoEat: value })}
           />
           <Toggle
             label="Reconnect"
+            help="Beklenmeyen kopmalarda bu hesap için yeniden bağlanma denemelerini açar. Manuel kapatma reconnect başlatmaz."
             checked={draft.reconnect.enabled}
             onChange={(value) => updateReconnect({ enabled: value })}
           />
-          <Toggle label="Enabled" checked={draft.enabled} onChange={(value) => onChange({ ...draft, enabled: value })} />
+          <Toggle
+            label="Enabled"
+            help="Bu profilin Start all ile başlatılıp başlatılmayacağını belirler. Tekli Connect düğmesi yine seçili profili kullanır."
+            checked={draft.enabled}
+            onChange={(value) => onChange({ ...draft, enabled: value })}
+          />
         </div>
 
         <Slider
           label="Base interval"
+          help="AFK routine için temel bekleme süresidir. Her rutin adımı bu sürenin etrafında planlanır."
           min={3000}
           max={90000}
           step={1000}
@@ -902,6 +1002,7 @@ function RoutinePanel({
         />
         <Slider
           label="Interval jitter"
+          help="Base interval üzerine rastgele sapma ekler. Yüzde büyüdükçe rutin adımları daha değişken aralıklarla çalışır."
           min={0}
           max={80}
           value={routine.jitterPercent}
@@ -910,6 +1011,7 @@ function RoutinePanel({
         />
         <Slider
           label="Eat below"
+          help="Hunger bu değere eşit veya altına inerse auto-eat güvenli yiyecek arar ve yemeye çalışır."
           min={1}
           max={19}
           value={routine.eatAtFood}
@@ -918,6 +1020,7 @@ function RoutinePanel({
         />
         <Slider
           label="Pause below"
+          help="Hunger bu değere kadar düşer ve güvenli yiyecek yoksa AFK hareketleri duraklar. Hunger toparlanınca rutin devam eder."
           min={0}
           max={routine.eatAtFood}
           value={routine.pauseAtFood}
@@ -985,9 +1088,11 @@ function SettingsModal({
             <Settings size={14} />
             Settings
           </span>
-          <button className="icon-btn" title="Close" onClick={onClose}>
-            <X size={16} />
-          </button>
+          <ActionWithHelp help="Ayar penceresini kapatır. Değişiklikler zaten anlık olarak uygulanır.">
+            <button className="icon-btn" title="Close" onClick={onClose}>
+              <X size={16} />
+            </button>
+          </ActionWithHelp>
         </div>
 
         <div className="modal__body">
@@ -996,6 +1101,7 @@ function SettingsModal({
             <div className="toggles">
               <Toggle
                 label="Auto-start enabled accounts on launch"
+                help="Uygulama açıldığında Enabled olan profilleri otomatik başlatır. Hesaplar connect stagger süresine göre sırayla bağlanır."
                 checked={settings.autoStartOnLaunch}
                 onChange={(value) => onChange({ autoStartOnLaunch: value })}
               />
@@ -1017,16 +1123,19 @@ function SettingsModal({
             <div className="toggles">
               <Toggle
                 label="Confirm before Stop all"
+                help="Stop all basıldığında tüm oturumları kapatmadan önce onay sorar. Yanlışlıkla toplu kapatmayı önler."
                 checked={settings.confirmStopAll}
                 onChange={(value) => onChange({ confirmStopAll: value })}
               />
               <Toggle
                 label="Show chat timestamps"
+                help="Chat console içinde mesajların saat sütununu gösterir veya gizler. Mesaj içeriğini değiştirmez."
                 checked={settings.showChatTimestamps}
                 onChange={(value) => onChange({ showChatTimestamps: value })}
               />
               <Toggle
                 label="Compact density"
+                help="Panel boşluklarını sıkılaştırır. Küçük ekranlarda daha fazla satır görmeyi kolaylaştırır."
                 checked={settings.compactDensity}
                 onChange={(value) => onChange({ compactDensity: value })}
               />
@@ -1038,6 +1147,7 @@ function SettingsModal({
             <div className="toggles">
               <Toggle
                 label="Reconnect enabled"
+                help="Yeni oluşturulan hesaplarda reconnect varsayılanını açık yapar. Mevcut profillerin kendi ayarını değiştirmez."
                 checked={reconnect.enabled}
                 onChange={(value) => setReconnect({ enabled: value })}
               />
@@ -1082,18 +1192,24 @@ function SettingsModal({
         </div>
 
         <div className="modal__foot">
-          <button className="btn" onClick={() => onChange(structuredClone(DEFAULT_SETTINGS))}>
-            <RotateCcw size={14} />
-            Reset defaults
-          </button>
+          <ActionWithHelp help="Tüm global settings değerlerini varsayılana döndürür. Profil içindeki hesap ayarlarını silmez.">
+            <button className="btn" onClick={() => onChange(structuredClone(DEFAULT_SETTINGS))}>
+              <RotateCcw size={14} />
+              Reset defaults
+            </button>
+          </ActionWithHelp>
           <span className="modal__foot-spacer" />
-          <button className="btn" onClick={onOpenData}>
-            <FolderOpen size={14} />
-            Open data folder
-          </button>
-          <button className="btn btn--primary" onClick={onClose}>
-            Done
-          </button>
+          <ActionWithHelp help="Profil JSON ve Microsoft auth session gibi yerel app dosyalarının bulunduğu klasörü açar.">
+            <button className="btn" onClick={onOpenData}>
+              <FolderOpen size={14} />
+              Open data folder
+            </button>
+          </ActionWithHelp>
+          <ActionWithHelp help="Settings penceresini kapatır. Değişiklikler kapatmadan önce zaten kaydedilmiş olur.">
+            <button className="btn btn--primary" onClick={onClose}>
+              Done
+            </button>
+          </ActionWithHelp>
         </div>
       </div>
     </div>
@@ -1143,7 +1259,12 @@ function StartupFlowPanel({ draft, onChange }: { draft: DraftProfile; onChange: 
   return (
     <form className="joinflow" onSubmit={(event) => event.preventDefault()}>
       <div className="joinflow__head">
-        <Toggle label="Join flow" checked={startup.enabled} onChange={(value) => updateStartup({ enabled: value })} />
+        <Toggle
+          label="Join flow"
+          help="Sunucu önce lobby'ye alıyorsa açılır. Bağlantıdan sonra auth/register komutu, ardından transfer komutu sırayla gönderilir."
+          checked={startup.enabled}
+          onChange={(value) => updateStartup({ enabled: value })}
+        />
         <span className="joinflow__hint">Lobby auth → SMP transfer</span>
       </div>
       <div className="joinflow__grid" data-disabled={!startup.enabled}>
@@ -1244,13 +1365,26 @@ function Field({
   );
 }
 
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+function Toggle({
+  label,
+  help,
+  checked,
+  onChange
+}: {
+  label: string;
+  help?: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
   return (
-    <label className={`toggle ${checked ? 'is-on' : ''}`}>
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
-      <span className="toggle__track" aria-hidden />
-      <span className="toggle__label">{label}</span>
-    </label>
+    <div className="toggle-wrap">
+      <label className={`toggle ${checked ? 'is-on' : ''}`}>
+        <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+        <span className="toggle__track" aria-hidden />
+        <span className="toggle__label">{label}</span>
+      </label>
+      {help ? <HelpTip text={help} /> : null}
+    </div>
   );
 }
 
@@ -1261,6 +1395,7 @@ function Slider({
   step,
   value,
   display,
+  help,
   onChange
 }: {
   label: string;
@@ -1269,15 +1404,24 @@ function Slider({
   step?: number;
   value: number;
   display: string;
+  help?: string;
   onChange: (value: number) => void;
 }) {
+  const inputId = useId();
+
   return (
-    <label className="slider">
+    <div className="slider">
       <span className="slider__top">
-        <span className="field__label">{label}</span>
+        <span className="slider__label-wrap">
+          <label className="field__label" htmlFor={inputId}>
+            {label}
+          </label>
+          {help ? <HelpTip text={help} /> : null}
+        </span>
         <strong>{display}</strong>
       </span>
       <input
+        id={inputId}
         type="range"
         min={min}
         max={max}
@@ -1285,7 +1429,7 @@ function Slider({
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
       />
-    </label>
+    </div>
   );
 }
 
