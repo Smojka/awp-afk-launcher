@@ -183,7 +183,14 @@ describe('ChunkKeeper UI', () => {
     const sliders = Array.from(container.querySelectorAll('.slider'));
     expect(sliders).toHaveLength(4);
     expect(sliders.every((slider) => slider.querySelector('.help-tip'))).toBe(true);
-    expect(screen.getByLabelText(/Seçili hesabı bağlar/i)).toBeInTheDocument();
+    const connectHelp = screen.getByLabelText(/Seçili hesabı bağlar/i);
+    expect(connectHelp).toBeInTheDocument();
+
+    await user.hover(connectHelp);
+    const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent(/Seçili hesabı bağlar/i);
+    expect(tooltip.parentElement).toBe(document.body);
+    await user.unhover(connectHelp);
 
     await user.click(screen.getByTitle('Settings'));
     let dialog = await screen.findByRole('dialog', { name: /^settings$/i });

@@ -529,29 +529,26 @@ textarea {
   pointer-events: none;
 }
 .help-tip__bubble {
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 8px);
-  z-index: 90;
-  display: none;
+  position: fixed;
+  z-index: 2147483000;
+  display: block;
   width: max-content;
-  max-width: min(280px, 78vw);
-  padding: 8px 10px;
-  border: 1px solid rgba(139, 92, 246, 0.3);
+  max-width: min(280px, calc(100vw - 24px));
+  padding: 9px 11px;
+  border: 1px solid rgba(167, 139, 250, 0.5);
   border-radius: var(--radius);
-  background: #0d0f1c;
-  color: var(--text-soft);
-  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.72);
+  background: #080914;
+  color: #f4f1ff;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.78), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
   font-family: var(--sans);
-  font-size: 11.5px;
-  font-weight: 500;
-  line-height: 1.4;
-  opacity: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.42;
+  opacity: 1;
   pointer-events: none;
   text-align: left;
-  transform: translate(-50%, 4px);
-  transition: opacity var(--t), transform var(--t), visibility var(--t);
-  visibility: hidden;
+  transform: translate(-50%, -100%);
+  visibility: visible;
   white-space: normal;
 }
 .help-tip__bubble::after {
@@ -561,29 +558,20 @@ textarea {
   bottom: -5px;
   width: 8px;
   height: 8px;
-  border-right: 1px solid rgba(139, 92, 246, 0.3);
-  border-bottom: 1px solid rgba(139, 92, 246, 0.3);
-  background: #0d0f1c;
+  border-right: 1px solid rgba(167, 139, 250, 0.5);
+  border-bottom: 1px solid rgba(167, 139, 250, 0.5);
+  background: #080914;
   transform: translateX(-50%) rotate(45deg);
 }
-.help-tip:hover .help-tip__bubble,
-.help-tip:focus .help-tip__bubble,
-.help-tip:focus-visible .help-tip__bubble {
-  display: block;
-  opacity: 1;
+.help-tip__bubble--bottom {
   transform: translate(-50%, 0);
-  visibility: visible;
 }
-.topbar .help-tip__bubble {
-  top: calc(100% + 8px);
-  bottom: auto;
-}
-.topbar .help-tip__bubble::after {
+.help-tip__bubble--bottom::after {
   top: -5px;
   bottom: auto;
   border: 0;
-  border-top: 1px solid rgba(139, 92, 246, 0.3);
-  border-left: 1px solid rgba(139, 92, 246, 0.3);
+  border-top: 1px solid rgba(167, 139, 250, 0.5);
+  border-left: 1px solid rgba(167, 139, 250, 0.5);
 }
 
 .icon-btn {

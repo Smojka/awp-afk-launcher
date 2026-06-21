@@ -1,4 +1,5 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Activity,
   Check,
@@ -479,12 +480,71 @@ function ActionWithHelp({
 }
 
 function HelpTip({ text }: { text: string }) {
+  const anchorRef = useRef<HTMLSpanElement>(null);
+  const tooltipId = useId();
+  const [isOpen, setIsOpen] = useState(false);
+  const [position, setPosition] = useState<{ left: number; top: number; placement: 'top' | 'bottom' } | null>(null);
+
+  const updatePosition = () => {
+    const anchor = anchorRef.current;
+    if (!anchor || typeof window === 'undefined') return;
+
+    const rect = anchor.getBoundingClientRect();
+    const maxWidth = Math.min(280, Math.max(180, window.innerWidth - 24));
+    const left = Math.min(Math.max(rect.left + rect.width / 2, 12 + maxWidth / 2), window.innerWidth - 12 - maxWidth / 2);
+    const placement = rect.top > 124 ? 'top' : 'bottom';
+    const top = placement === 'top' ? rect.top - 10 : rect.bottom + 10;
+    setPosition({ left, top, placement });
+  };
+
+  const open = () => {
+    updatePosition();
+    setIsOpen(true);
+  };
+
+  const close = () => setIsOpen(false);
+
+  useLayoutEffect(() => {
+    if (!isOpen) return undefined;
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [isOpen, text]);
+
   return (
-    <span className="help-tip" tabIndex={0} aria-label={text}>
+    <span
+      ref={anchorRef}
+      className="help-tip"
+      tabIndex={0}
+      aria-label={text}
+      aria-describedby={isOpen ? tooltipId : undefined}
+      onMouseEnter={open}
+      onMouseLeave={close}
+      onFocus={open}
+      onBlur={close}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape') close();
+      }}
+    >
       <CircleHelp size={13} aria-hidden="true" />
-      <span className="help-tip__bubble" role="tooltip">
-        {text}
-      </span>
+      {isOpen && position && typeof document !== 'undefined'
+        ? createPortal(
+            <span
+              id={tooltipId}
+              className={`help-tip__bubble help-tip__bubble--${position.placement}`}
+              role="tooltip"
+              style={{ left: `${position.left}px`, top: `${position.top}px` }}
+            >
+              {text}
+            </span>,
+            document.body
+          )
+        : null}
     </span>
   );
 }
