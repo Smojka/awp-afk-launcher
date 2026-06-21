@@ -17,15 +17,15 @@ The app is intentionally narrow: it is not a modpack launcher, hacked client, co
 - AFK routine actions: random look, jump pulse, sneak pulse, swing pulse, chat messages, auto-respawn, auto-eat, and reconnect backoff.
 - Turkish default chat messages that are varied and do not identify the session as automated.
 - Runtime-only lobby password handling. Lobby auth passwords are masked in the UI and stripped before profile JSON is written.
-- Signed-release guard scripts for production macOS and Windows packaging.
-- Local DMG and EXE/NSIS smoke packaging.
+- Local macOS DMG and Windows EXE/NSIS packaging.
+- GitHub Actions release workflow for publishing fresh installers.
 
 ## Requirements
 
 - Node.js 22 or newer.
 - npm.
 - macOS for macOS DMG builds.
-- A Windows machine or compatible signing environment for real Windows Authenticode verification.
+- A Windows machine or GitHub Actions runner for Windows installer builds.
 - Docker only if you want the local Minecraft smoke server.
 
 ## Install
@@ -195,7 +195,7 @@ Do not paste real credentials into source files, docs, tests, shell history that
 
 ## Packaging
 
-Local unsigned smoke builds:
+Local package builds:
 
 ```bash
 npm run package:mac
@@ -209,47 +209,14 @@ Expected output paths:
 
 `release/`, `dist/`, and `dist-electron/` are ignored by git. Upload release binaries to GitHub Releases or your distribution channel. Do not commit generated installers.
 
-Unsigned GitHub Releases are created by tags matching `v*-unsigned*`, for example:
+GitHub Releases are created by normal version tags, for example:
 
 ```bash
-git tag v0.1.0-unsigned.1
-git push origin v0.1.0-unsigned.1
+git tag v0.1.0
+git push origin v0.1.0
 ```
 
-That workflow builds fresh unsigned DMG and EXE artifacts in GitHub Actions and marks the GitHub Release as a prerelease with an unsigned warning.
-
-## Production Signing
-
-Production builds must be signed. Unsigned builds are only for local smoke testing.
-
-```bash
-npm run package:mac:signed
-npm run package:win:signed
-npm run package:prod
-npm run verify:release-signing
-```
-
-The signed scripts run `scripts/require-prod-signing.mjs` before packaging. If required certificate or notarization environment variables are missing, the command stops before producing a production artifact.
-
-macOS production release requires:
-
-- Apple Developer Program membership.
-- Developer ID Application certificate.
-- Hardened runtime entitlements.
-- Notarization credentials.
-- Stapled notarization ticket.
-
-Windows production release requires one of:
-
-- Azure Trusted Signing or another CI signing provider.
-- Public OV/EV code signing certificate.
-- Hardware-token certificate on Windows.
-
-Code signing and notarization reduce operating-system and antivirus warnings, but no project can honestly guarantee that every antivirus or SmartScreen reputation system will immediately trust a brand-new file. Keep publisher identity stable across releases so reputation can accumulate.
-
-Full signing details are in [docs/release-signing.md](docs/release-signing.md).
-
-Signed GitHub Releases are reserved for tags matching `signed-v*`. Do not use those tags until macOS and Windows signing credentials are configured.
+That workflow builds fresh DMG and EXE artifacts in GitHub Actions and uploads them to the GitHub Release. The app is distributed directly from GitHub, so macOS or Windows may ask for confirmation the first time it is opened.
 
 ## Release Checklist
 
@@ -263,11 +230,7 @@ npm audit --omit=dev
 npm run build
 npm run package:mac
 npm run package:win
-npm run package:prod
-npm run verify:release-signing
 ```
-
-If `package:prod` fails because signing credentials are missing, do not ship the unsigned local artifacts as production builds. Configure certificates first, then rerun the signed packaging command.
 
 ## Credential Hygiene
 
@@ -297,9 +260,9 @@ src/main/bot/              Mineflayer manager, AFK routine, tests
 src/main/storage/          Profile persistence
 src/renderer/              React UI
 src/shared/                Shared types and default chat messages
-scripts/                   Smoke, packaging, signing, icon generation
-build/                     Icons and macOS entitlements
-docs/                      Release signing and research notes
+scripts/                   Smoke, packaging, and icon generation
+build/                     Icons
+docs/                      Research and runtime notes
 ```
 
 ## Troubleshooting
@@ -309,5 +272,5 @@ docs/                      Release signing and research notes
 - Lobby login succeeds but SMP transfer fails: verify command spelling, transfer delay, and protocol version.
 - Bot starves: enable auto-eat, carry safe food, and check `eatAtFood` and `pauseAtFood`.
 - Reconnect loops: check server kicks, auth state, max attempts, and backoff settings.
-- Windows reputation warning: sign with a stable publisher certificate or Azure Trusted Signing and keep releases consistent.
-- macOS "damaged" or Gatekeeper warning: sign with Developer ID, notarize, staple, and verify with the release signing script.
+- Windows reputation warning: download from the GitHub Release page and keep filenames/versioning consistent between releases.
+- macOS "damaged" warning: remove the old app, download the latest DMG from GitHub Releases, then copy `ChunkKeeper.app` to Applications again. If macOS keeps the old quarantine flag, run `xattr -dr com.apple.quarantine /Applications/ChunkKeeper.app`.

@@ -1,34 +1,57 @@
-name: Signed Release
+name: Release
 
 on:
   workflow_dispatch:
   push:
     tags:
-      - "signed-v*"
+      - "v*"
 
 permissions:
   contents: write
 
 concurrency:
-  group: signed-release-${{ github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          cat > release-notes.md <<'NOTES'
+          ChunkKeeper release build.
+
+          Included artifacts:
+          - macOS ARM64 DMG
+          - Windows x64 NSIS installer
+
+          Validation performed in CI:
+          - TypeScript typecheck
+          - Vitest test suite
+          - Production dependency audit
+          - macOS and Windows packaging
+
+          The app is distributed directly from GitHub. macOS or Windows may ask for confirmation the first time it is opened.
+          NOTES
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release edit "$TAG_NAME" --title "ChunkKeeper $TAG_NAME" --notes-file release-notes.md --latest
+          else
+            gh release create "$TAG_NAME" --title "ChunkKeeper $TAG_NAME" --notes-file release-notes.md --latest
+          fi
+
   macos:
     name: macOS DMG
     runs-on: macos-15
-    env:
-      CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-      CSC_NAME: ${{ secrets.MAC_CSC_NAME }}
-      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_KEYCHAIN_PROFILE: ${{ secrets.APPLE_KEYCHAIN_PROFILE }}
-      APPLE_KEYCHAIN: ${{ secrets.APPLE_KEYCHAIN }}
+    needs: create-release
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,11 +71,8 @@ jobs:
       - name: Audit production dependencies
         run: npm audit --omit=dev
 
-      - name: Build signed DMG
-        run: npm run package:mac:signed
-
-      - name: Verify signing
-        run: npm run verify:release-signing
+      - name: Build DMG
+        run: npm run package:mac
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -64,35 +84,15 @@ jobs:
           if-no-files-found: error
 
       - name: Upload to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/signed-v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" release/*.dmg release/*.dmg.blockmap --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" release/*.dmg release/*.dmg.blockmap --title "ChunkKeeper $GITHUB_REF_NAME" --notes "Signed ChunkKeeper macOS release artifacts."
-          fi
+          TAG_NAME: ${{ github.ref_name }}
+        run: gh release upload "$TAG_NAME" release/*.dmg release/*.dmg.blockmap --clobber
 
   windows:
     name: Windows NSIS
     runs-on: windows-latest
-    env:
-      WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-      WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-      CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-      WIN_CSC_SUBJECT_NAME: ${{ secrets.WIN_CSC_SUBJECT_NAME }}
-      WIN_CSC_SHA1: ${{ secrets.WIN_CSC_SHA1 }}
-      WIN_PUBLISHER_NAME: ${{ secrets.WIN_PUBLISHER_NAME }}
-      WIN_TIMESTAMP_SERVER: ${{ secrets.WIN_TIMESTAMP_SERVER }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-      AZURE_CODE_SIGNING_ACCOUNT_NAME: ${{ secrets.AZURE_CODE_SIGNING_ACCOUNT_NAME }}
-      AZURE_CERTIFICATE_PROFILE_NAME: ${{ secrets.AZURE_CERTIFICATE_PROFILE_NAME }}
-      AZURE_PUBLISHER_NAME: ${{ secrets.AZURE_PUBLISHER_NAME }}
+    needs: create-release
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -112,11 +112,8 @@ jobs:
       - name: Audit production dependencies
         run: npm audit --omit=dev
 
-      - name: Build signed installer
-        run: npm run package:win:signed
-
-      - name: Verify signing
-        run: npm run verify:release-signing
+      - name: Build installer
+        run: npm run package:win
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -128,13 +125,8 @@ jobs:
           if-no-files-found: error
 
       - name: Upload to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/signed-v')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" release/*.exe release/*.exe.blockmap --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" release/*.exe release/*.exe.blockmap --title "ChunkKeeper $GITHUB_REF_NAME" --notes "Signed ChunkKeeper Windows release artifacts."
-          fi
+          TAG_NAME: ${{ github.ref_name }}
+        run: gh release upload "$TAG_NAME" release/*.exe release/*.exe.blockmap --clobber
