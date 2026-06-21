@@ -209,6 +209,15 @@ Expected output paths:
 
 `release/`, `dist/`, and `dist-electron/` are ignored by git. Upload release binaries to GitHub Releases or your distribution channel. Do not commit generated installers.
 
+Unsigned GitHub Releases are created by tags matching `v*-unsigned*`, for example:
+
+```bash
+git tag v0.1.0-unsigned.1
+git push origin v0.1.0-unsigned.1
+```
+
+That workflow builds fresh unsigned DMG and EXE artifacts in GitHub Actions and marks the GitHub Release as a prerelease with an unsigned warning.
+
 ## Production Signing
 
 Production builds must be signed. Unsigned builds are only for local smoke testing.
@@ -239,6 +248,8 @@ Windows production release requires one of:
 Code signing and notarization reduce operating-system and antivirus warnings, but no project can honestly guarantee that every antivirus or SmartScreen reputation system will immediately trust a brand-new file. Keep publisher identity stable across releases so reputation can accumulate.
 
 Full signing details are in [docs/release-signing.md](docs/release-signing.md).
+
+Signed GitHub Releases are reserved for tags matching `signed-v*`. Do not use those tags until macOS and Windows signing credentials are configured.
 
 ## Release Checklist
 
