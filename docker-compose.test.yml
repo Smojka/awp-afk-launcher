@@ -1,0 +1,22 @@
+services:
+  minecraft-test:
+    image: itzg/minecraft-server:java21
+    container_name: afk-launcher-minecraft-test
+    ports:
+      - "25565:25565"
+    environment:
+      EULA: "TRUE"
+      TYPE: "VANILLA"
+      VERSION: "1.21.1"
+      ONLINE_MODE: "FALSE"
+      MEMORY: "1G"
+      MOTD: "AFK Launcher local smoke server"
+      ENABLE_COMMAND_BLOCK: "FALSE"
+      SPAWN_PROTECTION: "0"
+      VIEW_DISTANCE: "6"
+      SIMULATION_DISTANCE: "4"
+    volumes:
+      - afk-launcher-minecraft-test:/data
+
+volumes:
+  afk-launcher-minecraft-test:

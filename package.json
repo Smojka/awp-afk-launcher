@@ -1,0 +1,123 @@
+{
+  "name": "afk-launcher",
+  "version": "0.1.0",
+  "description": "ChunkKeeper desktop launcher for authorized Minecraft Java AFK sessions.",
+  "author": "smojka",
+  "type": "module",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite --host 127.0.0.1",
+    "dev:electron": "wait-on http://127.0.0.1:5173 && npm run build:electron && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "build": "npm run typecheck && vite build && npm run build:electron",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "package:mac": "npm run build && electron-builder --mac dmg --arm64",
+    "package:mac:x64": "npm run build && electron-builder --mac dmg --x64",
+    "package:win": "npm run build && electron-builder --win nsis --x64",
+    "package:mac:signed": "node scripts/require-prod-signing.mjs mac && npm run build && electron-builder --config electron-builder.signed.config.mjs --mac dmg --arm64",
+    "package:win:signed": "node scripts/require-prod-signing.mjs win && npm run build && electron-builder --config electron-builder.signed.config.mjs --win nsis --x64",
+    "package:prod": "node scripts/require-prod-signing.mjs all && npm run build && electron-builder --config electron-builder.signed.config.mjs --mac dmg --arm64 && electron-builder --config electron-builder.signed.config.mjs --win nsis --x64",
+    "verify:release-signing": "node scripts/verify-release-signing.mjs",
+    "generate:icons": "node scripts/generate-brand-icons.mjs",
+    "preview": "vite preview --host 127.0.0.1",
+    "test:arkonas": "node scripts/arkonas-live-test.mjs",
+    "smoke:server": "node scripts/smoke-local-server.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit"
+  },
+  "dependencies": {
+    "mineflayer": "^4.33.0"
+  },
+  "devDependencies": {
+    "@fontsource/ibm-plex-sans": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@testing-library/jest-dom": "^6.6.4",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "concurrently": "^9.2.1",
+    "cross-env": "^7.0.3",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12",
+    "jsdom": "^25.0.1",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.7",
+    "vitest": "^4.0.15",
+    "wait-on": "^9.0.1"
+  },
+  "overrides": {
+    "@azure/msal-node": "^5.2.5",
+    "esbuild": "^0.28.1",
+    "yggdrasil": {
+      "uuid": "^11.1.1"
+    }
+  },
+  "build": {
+    "appId": "com.smojka.chunkkeeper",
+    "productName": "ChunkKeeper",
+    "compression": "maximum",
+    "afterPack": "scripts/after-pack-prune.mjs",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json",
+      "!**/*.map",
+      "!**/*.test.*",
+      "!node_modules/**/.github/**/*",
+      "!node_modules/**/.gitpod.yml",
+      "!node_modules/**/{test,tests,__tests__,doc,docs,example,examples,coverage}/**/*",
+      "!node_modules/**/*.{md,markdown,map,ts,tsx}",
+      "!node_modules/**/tsconfig.json",
+      "!node_modules/@azure/msal-common/{dist,dist-browser,types}/**/*",
+      "!node_modules/@azure/msal-node/{dist,types}/**/*",
+      "!node_modules/rxjs/dist/{bundles,esm,esm5}/**/*",
+      "!node_modules/rxjs/src/**/*",
+      "!node_modules/minecraft-data/minecraft-data/data/bedrock/!(common)/**/*",
+      "!node_modules/minecraft-data/minecraft-data/data/pc/!(common|latest|1.16|1.16.1|1.17|1.19|1.19.2|1.19.4|1.20|1.20.1|1.20.2|1.20.3|1.20.4|1.20.5|1.20.6|1.21.1)/**/*"
+    ],
+    "asar": true,
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.utilities",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "notarize": true,
+      "artifactName": "ChunkKeeper-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "artifactName": "ChunkKeeper-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico",
+      "requestedExecutionLevel": "asInvoker",
+      "verifyUpdateCodeSignature": true,
+      "artifactName": "ChunkKeeper-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "artifactName": "ChunkKeeper-Setup-${version}-${arch}.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "ChunkKeeper"
+    }
+  }
+}

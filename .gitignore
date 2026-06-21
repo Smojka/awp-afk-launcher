@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-electron/
+release/
+.vite/
+.claude/
+.playwright-cli/
+coverage/
+*.log
+.DS_Store
+profiles.test.json
