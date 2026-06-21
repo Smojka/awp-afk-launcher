@@ -144,6 +144,20 @@ The Settings modal contains:
 
 At small window sizes the app switches to stacked layouts. The Electron window minimum is `900x640`.
 
+## On-Screen Help
+
+Most action buttons, toggles, and sliders have a small `?` help icon next to them. Hover the mouse over the icon, or focus it with the keyboard, to see what that control does and how it behaves.
+
+Help popups are rendered at the top app layer instead of inside the surrounding panel. They should stay readable above cards, modal bodies, scroll containers, and compact responsive layouts. The popup is also constrained to the current window width so it does not run off-screen on smaller windows.
+
+Examples:
+
+- Connect help explains the profile connection sequence, including lobby auth, transfer command, and AFK routine startup.
+- Stop all help explains that running sessions are stopped and that the confirmation setting is respected.
+- Auto-eat help explains the hunger threshold and safe-food behavior.
+- Base interval and Interval jitter help explain routine timing and randomization.
+- Settings help explains which options affect existing profiles and which only affect new profiles.
+
 ## Local Smoke Server
 
 The repository includes a Docker Compose smoke server for offline-mode local testing.
