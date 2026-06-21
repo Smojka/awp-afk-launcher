@@ -18,6 +18,9 @@ jobs:
     name: Create unsigned GitHub Release
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Create prerelease
         env:
           GH_TOKEN: ${{ github.token }}
