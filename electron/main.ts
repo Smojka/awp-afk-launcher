@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BotManager } from '../src/main/bot/botManager.js';
 import type { AppSettings, LauncherState, SaveProfileInput } from '../src/shared/types.js';
+import { launcherUserDataDir } from './paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,7 +47,7 @@ async function createWindow(): Promise<void> {
 
 function createManager(): BotManager {
   const botManager = new BotManager({
-    userDataDir: process.env.AFK_LAUNCHER_USER_DATA_DIR || app.getPath('userData'),
+    userDataDir: launcherUserDataDir(),
     appVersion: app.getVersion()
   });
   botManager.on('state', (state: LauncherState) => {
@@ -69,7 +70,7 @@ function registerIpc(): void {
   ipcMain.handle('bot:sendChat', async (_event, profileId: string, message: string) => getManager().sendChat(profileId, message));
   ipcMain.handle('app:updateSettings', async (_event, patch: Partial<AppSettings>) => getManager().updateSettings(patch));
   ipcMain.handle('app:openUserData', async () => {
-    await shell.openPath(app.getPath('userData'));
+    await shell.openPath(launcherUserDataDir());
   });
   ipcMain.handle('window:minimize', (event) => {
     BrowserWindow.fromWebContents(event.sender)?.minimize();

@@ -113,6 +113,7 @@ export interface RuntimeSnapshot {
   systemState: 'online' | 'degraded';
   botCount: number;
   onlineCount: number;
+  webDashboardUrl: string | null;
   authSessionDir: string;
   estimatedRamMb: number;
   latestError: string | null;

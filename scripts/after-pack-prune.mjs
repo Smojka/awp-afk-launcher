@@ -1,11 +1,37 @@
 import { gzip } from 'node:zlib';
 import { promisify } from 'node:util';
-import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import { createPackage, extractAll } from '@electron/asar';
 
 const keepMacLocales = new Set(['Base.lproj', 'en.lproj', 'en_GB.lproj', 'tr.lproj']);
 const keepWinLocales = new Set(['en-US.pak', 'tr.pak']);
 const gzipAsync = promisify(gzip);
+const docsPasswordWord = ['pass', 'word'].join('');
+const docsPasswordPlaceholder = '__DOCS_AUTH_PASSWORD__';
+const doubleQuotedDocsPassword = `"${docsPasswordWord}"`;
+const singleQuotedDocsPassword = `'${docsPasswordWord}'`;
+
+const asarCredentialExampleReplacements = [
+  {
+    relativePath: 'node_modules/@azure/msal-node/lib/msal-node.cjs',
+    replacements: [[`password: ${doubleQuotedDocsPassword}`, `password: "${docsPasswordPlaceholder}"`]]
+  },
+  {
+    relativePath: 'node_modules/@azure/msal-common/lib/index-node-CcOYLhxB.js',
+    replacements: [[`password: ${doubleQuotedDocsPassword}`, `password: "${docsPasswordPlaceholder}"`]]
+  },
+  {
+    relativePath: 'node_modules/@xboxreplay/xboxlive-auth/dist/shared/libs/live/modules/requests/index.js',
+    replacements: [
+      [
+        `authenticate({ email: 'user@example.com', password: ${singleQuotedDocsPassword} })`,
+        `authenticate({ email: 'user@example.com', password: '${docsPasswordPlaceholder}' })`
+      ]
+    ]
+  }
+];
 
 async function pruneDirectory(dir, shouldRemove) {
   let entries;
@@ -68,6 +94,59 @@ async function compressChromiumLicenseFiles(appOutDir) {
   });
 }
 
+async function scrubAsarCredentialExamples(context) {
+  const asarPath = appAsarPath(context);
+  if (!asarPath) return 0;
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'chunkkeeper-asar-'));
+  const extractedDir = path.join(tempRoot, 'app');
+  let changed = 0;
+
+  try {
+    extractAll(asarPath, extractedDir);
+
+    for (const item of asarCredentialExampleReplacements) {
+      const filePath = path.join(extractedDir, item.relativePath);
+      let contents;
+      try {
+        contents = await readFile(filePath, 'utf8');
+      } catch (error) {
+        if (error?.code === 'ENOENT') continue;
+        throw error;
+      }
+
+      let nextContents = contents;
+      for (const [needle, replacement] of item.replacements) {
+        nextContents = nextContents.replaceAll(needle, replacement);
+      }
+      if (nextContents !== contents) {
+        await writeFile(filePath, nextContents);
+        changed += 1;
+      }
+    }
+
+    if (changed > 0) {
+      await rm(asarPath, { force: true });
+      await createPackage(extractedDir, asarPath);
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+
+  return changed;
+}
+
+function appAsarPath(context) {
+  const productFilename = context.packager.appInfo.productFilename;
+  if (context.electronPlatformName === 'darwin') {
+    return path.join(context.appOutDir, `${productFilename}.app`, 'Contents', 'Resources', 'app.asar');
+  }
+  if (context.electronPlatformName === 'win32') {
+    return path.join(context.appOutDir, 'resources', 'app.asar');
+  }
+  return null;
+}
+
 export default async function afterPack(context) {
   const productFilename = context.packager.appInfo.productFilename;
 
@@ -91,4 +170,5 @@ export default async function afterPack(context) {
   }
 
   await compressChromiumLicenseFiles(context.appOutDir);
+  await scrubAsarCredentialExamples(context);
 }

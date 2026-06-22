@@ -7,6 +7,7 @@ import {
   CircleHelp,
   FolderOpen,
   Gauge,
+  Globe2,
   MessageSquare,
   Maximize2,
   Minimize2,
@@ -158,7 +159,7 @@ export function App({ api }: { api?: LauncherApi } = {}) {
   const liveState = selectedSession?.state ?? 'idle';
   const isLive = liveState === 'online' || liveState === 'connecting' || liveState === 'reconnecting';
   const position = selectedSession?.position ?? null;
-  const showWindowControls = apiClient.platform !== 'darwin';
+  const showWindowControls = apiClient.platform === 'win32' || apiClient.platform === 'linux';
   const appClassName = [
     'app',
     state.settings.compactDensity ? 'is-compact' : '',
@@ -365,6 +366,14 @@ export function App({ api }: { api?: LauncherApi } = {}) {
           value={state.runtime.systemState}
           tone={state.runtime.systemState === 'online' ? 'ok' : 'warn'}
         />
+        {state.runtime.webDashboardUrl ? (
+          <StatusItem
+            icon={<Globe2 size={13} />}
+            label="Web"
+            value={compactUrl(state.runtime.webDashboardUrl)}
+            tone="ok"
+          />
+        ) : null}
         <StatusItem icon={<Gauge size={13} />} label="RAM" value={`${state.runtime.estimatedRamMb} MB est.`} />
         <StatusItem icon={<Wifi size={13} />} label="Bots" value={`${state.runtime.onlineCount}/${state.runtime.botCount} online`} />
         <StatusItem
@@ -1245,6 +1254,7 @@ function SettingsModal({
               <Kv k="App version" v={runtime.appVersion} />
               <Kv k="Launcher" v={APP_NAME} />
               <Kv k="Developed by" v="smojka" />
+              {runtime.webDashboardUrl ? <Kv k="Web dashboard" v={runtime.webDashboardUrl} tone="ok" /> : null}
               <Kv k="System" v={runtime.systemState} tone={runtime.systemState === 'online' ? 'ok' : undefined} />
               <Kv k="Bots online" v={`${runtime.onlineCount}/${runtime.botCount}`} />
             </dl>
@@ -1562,6 +1572,15 @@ function StatusItem({
       <strong className="statusbar__value">{value}</strong>
     </div>
   );
+}
+
+function compactUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.hostname}:${parsed.port || (parsed.protocol === 'https:' ? '443' : '80')}`;
+  } catch {
+    return url;
+  }
 }
 
 function createNewAccountDraft(template: DraftProfile, settings: AppSettings, accountNumber: number): DraftProfile {

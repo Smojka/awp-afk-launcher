@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { createDemoState } from './demoState';
 import type { LauncherApi, LauncherState, SaveProfileInput } from '../shared/types';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function createTestApi(): LauncherApi {
   let state = createDemoState();
@@ -166,10 +170,12 @@ describe('ChunkKeeper UI', () => {
     expect(within(dialog).getByText('Reconnect policy')).toBeInTheDocument();
   });
 
-  it('does not silently fall back to simulated data when the Electron bridge is missing', async () => {
+  it('does not silently fall back to simulated data when the desktop bridge and local web API are missing', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED')));
+
     render(<App />);
 
-    expect(await screen.findByText(/Launcher bridge is unavailable/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Local web dashboard API is unavailable/i)).toBeInTheDocument();
     expect(screen.queryByText('Server profile')).not.toBeInTheDocument();
   });
 

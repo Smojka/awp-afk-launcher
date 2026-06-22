@@ -9,6 +9,7 @@ The app is intentionally narrow: it is not a modpack launcher, hacked client, co
 ## What Is Included
 
 - Electron desktop shell with a React/Vite renderer and TypeScript main process.
+- Separate local browser-dashboard executable for macOS and Windows, served on loopback starting at `http://127.0.0.1:3000`.
 - Mineflayer runtime in the Electron main process. The renderer does not mock live bot state.
 - Profile storage for Minecraft account/server settings.
 - Offline and Microsoft auth modes through Mineflayer.
@@ -40,7 +41,21 @@ npm install
 npm run dev
 ```
 
-This starts Vite on `127.0.0.1` and launches Electron. The renderer expects the Electron preload bridge. Opening the raw Vite page directly is not treated as a valid app session and shows a bridge error instead of silently falling back to fake data.
+This starts Vite on `127.0.0.1` and launches the native Electron desktop app. The desktop window uses the Electron preload bridge and does not start the browser-dashboard server.
+
+To run the separate browser-dashboard app in development:
+
+```bash
+npm run dev:web
+```
+
+That starts a loopback web server. The default address is:
+
+```text
+http://127.0.0.1:3000
+```
+
+If that port is already occupied, ChunkKeeper Web tries the next local port. When the Electron bridge is missing, the renderer tries the local web API instead of falling back to fake data. If ChunkKeeper Web is not running, the page shows an explicit local API error.
 
 Useful development commands:
 
@@ -53,7 +68,7 @@ npm audit --omit=dev
 
 Current release-prep verification for this workspace returned `found 0 vulnerabilities` from `npm audit --omit=dev`.
 
-## Using The App
+## Using The Native App
 
 1. Start ChunkKeeper.
 2. Select an account profile from the left sidebar or create a new one.
@@ -74,6 +89,14 @@ Current release-prep verification for this workspace returned `found 0 vulnerabi
 5. Configure AFK routine controls.
 6. Save the profile.
 7. Press Connect.
+
+## Using The Browser Dashboard App
+
+1. Start ChunkKeeper Web.
+2. Open the browser address it launches, normally `http://127.0.0.1:3000`.
+3. Use the same dashboard controls in the browser.
+
+ChunkKeeper and ChunkKeeper Web share the same local profile/auth data directory. Run one of them at a time for the cleanest session ownership.
 
 ## Login And Register Flow
 
@@ -200,12 +223,18 @@ Local package builds:
 ```bash
 npm run package:mac
 npm run package:win
+npm run package:web:mac
+npm run package:web:win
 ```
+
+`package:mac` and `package:win` build the native desktop app. `package:web:mac` and `package:web:win` build the separate browser-dashboard app. `npm run package:prod` builds both native and browser-dashboard artifacts.
 
 Expected output paths:
 
 - `release/ChunkKeeper-0.1.0-arm64.dmg`
 - `release/ChunkKeeper-Setup-0.1.0-x64.exe`
+- `release/ChunkKeeper-Web-0.1.0-arm64.dmg`
+- `release/ChunkKeeper-Web-Setup-0.1.0-x64.exe`
 
 `release/`, `dist/`, and `dist-electron/` are ignored by git. Upload release binaries to GitHub Releases or your distribution channel. Do not commit generated installers.
 
@@ -228,8 +257,7 @@ npm run typecheck
 npm test
 npm audit --omit=dev
 npm run build
-npm run package:mac
-npm run package:win
+npm run package:prod
 ```
 
 ## Credential Hygiene
