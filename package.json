@@ -1,6 +1,6 @@
 {
   "name": "afk-launcher",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "ChunkKeeper desktop launcher for authorized Minecraft Java AFK sessions.",
   "author": "smojka",
   "type": "module",
@@ -19,7 +19,7 @@
     "package:native": "npm run package:mac && npm run package:win",
     "package:web:mac": "npm run build && electron-builder --config electron-builder.web.cjs --mac dmg --arm64 --publish never",
     "package:web:mac:x64": "npm run build && electron-builder --config electron-builder.web.cjs --mac dmg --x64 --publish never",
-    "package:web:win": "npm run build && electron-builder --config electron-builder.web.cjs --win nsis --x64 --publish never",
+    "package:web:win": "npm run build && electron-builder --config electron-builder.web.cjs --win portable --x64 --publish never",
     "package:web": "npm run package:web:mac && npm run package:web:win",
     "package:prod": "npm run package:native && npm run package:web",
     "generate:icons": "node scripts/generate-brand-icons.mjs",

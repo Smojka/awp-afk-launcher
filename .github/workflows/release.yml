@@ -30,16 +30,19 @@ jobs:
           ChunkKeeper release build.
 
           Included artifacts:
-          - macOS ARM64 DMG
-          - Windows x64 NSIS installer
+          - ChunkKeeper native macOS ARM64 DMG
+          - ChunkKeeper native Windows x64 NSIS installer
+          - ChunkKeeper Web macOS ARM64 DMG
+          - ChunkKeeper Web Windows x64 portable EXE
 
           Validation performed in CI:
           - TypeScript typecheck
           - Vitest test suite
           - Production dependency audit
-          - macOS and Windows packaging
+          - Native macOS and Windows packaging
+          - Web-dashboard macOS and Windows portable packaging
 
-          The app is distributed directly from GitHub. macOS or Windows may ask for confirmation the first time it is opened.
+          ChunkKeeper is the native desktop app. ChunkKeeper Web starts the localhost browser dashboard without a Windows setup installer.
           NOTES
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
@@ -71,13 +74,16 @@ jobs:
       - name: Audit production dependencies
         run: npm audit --omit=dev
 
-      - name: Build DMG
+      - name: Build native DMG
         run: npm run package:mac
+
+      - name: Build web dashboard DMG
+        run: npm run package:web:mac
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: chunkkeeper-macos-dmg
+          name: chunkkeeper-macos-dmgs
           path: |
             release/*.dmg
             release/*.dmg.blockmap
@@ -90,7 +96,7 @@ jobs:
         run: gh release upload "$TAG_NAME" release/*.dmg release/*.dmg.blockmap --clobber
 
   windows:
-    name: Windows NSIS
+    name: Windows EXE
     runs-on: windows-latest
     needs: create-release
     steps:
@@ -112,13 +118,16 @@ jobs:
       - name: Audit production dependencies
         run: npm audit --omit=dev
 
-      - name: Build installer
+      - name: Build native installer
         run: npm run package:win
+
+      - name: Build web dashboard portable EXE
+        run: npm run package:web:win
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: chunkkeeper-windows-installer
+          name: chunkkeeper-windows-exes
           path: |
             release/*.exe
             release/*.exe.blockmap

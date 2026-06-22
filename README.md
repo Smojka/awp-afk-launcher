@@ -18,7 +18,7 @@ The app is intentionally narrow: it is not a modpack launcher, hacked client, co
 - AFK routine actions: random look, jump pulse, sneak pulse, swing pulse, chat messages, auto-respawn, auto-eat, and reconnect backoff.
 - Turkish default chat messages that are varied and do not identify the session as automated.
 - Runtime-only lobby password handling. Lobby auth passwords are masked in the UI and stripped before profile JSON is written.
-- Local macOS DMG and Windows EXE/NSIS packaging.
+- Local macOS DMG, Windows NSIS installer, and Windows portable EXE packaging.
 - GitHub Actions release workflow for publishing fresh installers.
 
 ## Requirements
@@ -227,22 +227,22 @@ npm run package:web:mac
 npm run package:web:win
 ```
 
-`package:mac` and `package:win` build the native desktop app. `package:web:mac` and `package:web:win` build the separate browser-dashboard app. `npm run package:prod` builds both native and browser-dashboard artifacts.
+`package:mac` and `package:win` build the native desktop app. `package:web:mac` builds the separate browser-dashboard macOS app. `package:web:win` builds the browser-dashboard Windows portable EXE without a setup installer. `npm run package:prod` builds all artifacts.
 
 Expected output paths:
 
-- `release/ChunkKeeper-0.1.0-arm64.dmg`
-- `release/ChunkKeeper-Setup-0.1.0-x64.exe`
-- `release/ChunkKeeper-Web-0.1.0-arm64.dmg`
-- `release/ChunkKeeper-Web-Setup-0.1.0-x64.exe`
+- `release/ChunkKeeper-0.1.1-arm64.dmg`
+- `release/ChunkKeeper-Setup-0.1.1-x64.exe`
+- `release/ChunkKeeper-Web-0.1.1-arm64.dmg`
+- `release/ChunkKeeper-Web-Portable-0.1.1-x64.exe`
 
 `release/`, `dist/`, and `dist-electron/` are ignored by git. Upload release binaries to GitHub Releases or your distribution channel. Do not commit generated installers.
 
 GitHub Releases are created by normal version tags, for example:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 That workflow builds fresh DMG and EXE artifacts in GitHub Actions and uploads them to the GitHub Release. The app is distributed directly from GitHub, so macOS or Windows may ask for confirmation the first time it is opened.

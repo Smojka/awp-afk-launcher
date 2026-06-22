@@ -19,11 +19,12 @@ module.exports = {
   },
   win: {
     ...base.win,
-    artifactName: 'ChunkKeeper-Web-${version}-${arch}.${ext}'
+    target: [
+      'portable'
+    ],
+    artifactName: 'ChunkKeeper-Web-Portable-${version}-${arch}.${ext}'
   },
-  nsis: {
-    ...base.nsis,
-    artifactName: 'ChunkKeeper-Web-Setup-${version}-${arch}.${ext}',
-    shortcutName: 'ChunkKeeper Web'
+  portable: {
+    artifactName: 'ChunkKeeper-Web-Portable-${version}-${arch}.${ext}'
   }
 };
