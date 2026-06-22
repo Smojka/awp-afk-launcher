@@ -933,12 +933,61 @@ function formatError(error: unknown): string {
 }
 
 function stringifyReason(reason: unknown): string {
+  const componentText = stringifyMinecraftText(reason);
+  if (componentText) return componentText;
   if (typeof reason === 'string') return reason;
   try {
     return JSON.stringify(reason);
   } catch {
     return String(reason);
   }
+}
+
+function stringifyMinecraftText(reason: unknown): string | null {
+  const text = collectMinecraftText(parseMinecraftJson(reason)).trim();
+  return text || null;
+}
+
+function parseMinecraftJson(reason: unknown): unknown {
+  if (typeof reason !== 'string') return reason;
+  const trimmed = reason.trim();
+  if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) return reason;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return reason;
+  }
+}
+
+function collectMinecraftText(value: unknown): string {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map(collectMinecraftText).filter(Boolean).join('');
+  if (!value || typeof value !== 'object') return '';
+
+  const component = value as Record<string, unknown>;
+  const parts: string[] = [];
+  if (
+    typeof component.text === 'string' ||
+    typeof component.text === 'number' ||
+    typeof component.text === 'boolean'
+  ) {
+    parts.push(String(component.text));
+  }
+  if (Array.isArray(component.extra)) {
+    parts.push(...component.extra.map(collectMinecraftText));
+  }
+
+  const plainText = parts.join('').trim();
+  if (plainText) return parts.join('');
+
+  if (Array.isArray(component.with)) {
+    const args = component.with.map(collectMinecraftText).filter(Boolean);
+    if (args.length > 0) return args.join(' ');
+  }
+
+  if (typeof component.fallback === 'string' && component.fallback.trim()) return component.fallback;
+  if (typeof component.translate === 'string' && component.translate.trim()) return component.translate;
+  return '';
 }
 
 function cloneProfile(profile: AccountProfile): AccountProfile {

@@ -377,6 +377,30 @@ describe('BotManager', () => {
     expect(fakeBot.chat).toHaveBeenCalledWith('hello server');
   });
 
+  it('normalizes Minecraft JSON kick reasons before showing status text', async () => {
+    const fakeBot = new FakeBot();
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('kicked', '{"text":"Çok hızlı bağlanmaya çalışıyorsun, daha sonra tekrar dene."}');
+
+    let state = manager.getState();
+    expect(state.sessions[profile.id].lastError).toBe('Çok hızlı bağlanmaya çalışıyorsun, daha sonra tekrar dene.');
+    expect(state.sessions[profile.id].lastError).not.toContain('{"text"');
+    expect(state.sessions[profile.id].events[0].detail).toBe('Çok hızlı bağlanmaya çalışıyorsun, daha sonra tekrar dene.');
+
+    fakeBot.emit('kicked', { text: '', extra: [{ text: 'Rate limit' }, { text: ': wait before reconnecting' }] });
+
+    state = manager.getState();
+    expect(state.sessions[profile.id].lastError).toBe('Rate limit: wait before reconnecting');
+  });
+
   it('accepts mandatory server resource packs before world spawn can continue', async () => {
     const fakeBot = new FakeBot();
     const manager = new BotManager({
