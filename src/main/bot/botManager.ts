@@ -231,6 +231,7 @@ export class BotManager extends EventEmitter {
     }
     this.selectedProfileId = profile.id;
     this.rebuildSessions();
+    this.applySavedRoutineToRunningSession(this.sessions.get(profile.id));
     await this.persist();
     this.emitState();
     return this.getState();
@@ -513,6 +514,13 @@ export class BotManager extends EventEmitter {
     session.startupCompleted = true;
     session.snapshot.startupActive = false;
     session.snapshot.routineActive = true;
+  }
+
+  private applySavedRoutineToRunningSession(session?: ManagedSession): void {
+    if (!session?.bot || session.desiredStop || !session.startupCompleted || session.snapshot.startupActive) return;
+    if (!session.routine && !session.snapshot.routineActive) return;
+    this.startRoutine(session, session.bot);
+    this.pushEvent(session, 'system', 'info', 'Routine updated', 'Saved profile settings applied');
   }
 
   private async handleFoodGuard(session: ManagedSession, bot: BotLike): Promise<void> {

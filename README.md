@@ -231,18 +231,18 @@ npm run package:web:win
 
 Expected output paths:
 
-- `release/ChunkKeeper-0.1.1-arm64.dmg`
-- `release/ChunkKeeper-Setup-0.1.1-x64.exe`
-- `release/ChunkKeeper-Web-0.1.1-arm64.dmg`
-- `release/ChunkKeeper-Web-Portable-0.1.1-x64.exe`
+- `release/ChunkKeeper-0.1.2-arm64.dmg`
+- `release/ChunkKeeper-Setup-0.1.2-x64.exe`
+- `release/ChunkKeeper-Web-0.1.2-arm64.dmg`
+- `release/ChunkKeeper-Web-Portable-0.1.2-x64.exe`
 
 `release/`, `dist/`, and `dist-electron/` are ignored by git. Upload release binaries to GitHub Releases or your distribution channel. Do not commit generated installers.
 
 GitHub Releases are created by normal version tags, for example:
 
 ```bash
-git tag v0.1.1
-git push origin v0.1.1
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
 That workflow builds fresh DMG and EXE artifacts in GitHub Actions and uploads them to the GitHub Release. The app is distributed directly from GitHub, so macOS or Windows may ask for confirmation the first time it is opened.

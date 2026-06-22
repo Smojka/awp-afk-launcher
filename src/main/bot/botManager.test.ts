@@ -230,6 +230,53 @@ describe('BotManager', () => {
     expect(state.sessions[profile.id].events.some((event) => event.type === 'respawn' && event.label === 'Respawn requested')).toBe(true);
   });
 
+  it('applies saved routine toggle changes to an already running session', async () => {
+    vi.useFakeTimers();
+    const fakeBot = new FakeBot();
+    const jumpOnlyProfile: AccountProfile = {
+      ...profile,
+      routine: {
+        ...profile.routine,
+        randomLook: false,
+        autoJump: true,
+        sneakPulse: false,
+        swingArm: false,
+        chatHeartbeat: false,
+        intervalMs: 3000,
+        jitterPercent: 0
+      }
+    };
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([jumpOnlyProfile])
+    });
+
+    await manager.load();
+    await manager.connect(jumpOnlyProfile.id);
+    fakeBot.emit('spawn');
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(fakeBot.setControlState).toHaveBeenCalledWith('jump', true);
+
+    fakeBot.setControlState.mockClear();
+    const state = await manager.saveProfile({
+      ...jumpOnlyProfile,
+      routine: {
+        ...jumpOnlyProfile.routine,
+        autoJump: false
+      }
+    });
+
+    expect(state.profiles[0].routine.autoJump).toBe(false);
+    expect(state.sessions[jumpOnlyProfile.id].events.some((event) => event.label === 'Routine updated')).toBe(true);
+    expect(fakeBot.setControlState).toHaveBeenCalledWith('jump', false);
+
+    fakeBot.setControlState.mockClear();
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(fakeBot.setControlState).not.toHaveBeenCalledWith('jump', true);
+  });
+
   it('uses the reconnect policy after an unexpected disconnect', async () => {
     vi.useFakeTimers();
     const bots: FakeBot[] = [];
