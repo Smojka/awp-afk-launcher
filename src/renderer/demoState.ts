@@ -149,6 +149,7 @@ export function createDemoState(): LauncherState {
       systemState: 'online',
       botCount: 2,
       onlineCount: 1,
+      webDashboardUrl: 'http://127.0.0.1:3000',
       authSessionDir: 'AppData/Roaming/ChunkKeeper/minecraft-auth-cache',
       estimatedRamMb: 220,
       latestError: null

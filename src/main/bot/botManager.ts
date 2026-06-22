@@ -140,6 +140,7 @@ export class BotManager extends EventEmitter {
   private sessions = new Map<string, ManagedSession>();
   private selectedProfileId: string | null = null;
   private settings: AppSettings = cloneSettings(DEFAULT_SETTINGS);
+  private webDashboardUrl: string | null = null;
   private loaded = false;
 
   constructor(
@@ -186,6 +187,11 @@ export class BotManager extends EventEmitter {
       settings: cloneSettings(this.settings),
       selectedProfileId: this.selectedProfileId
     };
+  }
+
+  setWebDashboardUrl(url: string | null): void {
+    this.webDashboardUrl = url;
+    this.emitState();
   }
 
   async updateSettings(patch: Partial<AppSettings>): Promise<LauncherState> {
@@ -782,6 +788,7 @@ export class BotManager extends EventEmitter {
       systemState: latestError ? 'degraded' : 'online',
       botCount: this.profiles.length,
       onlineCount: snapshots.filter((snapshot) => snapshot.state === 'online').length,
+      webDashboardUrl: this.webDashboardUrl,
       authSessionDir: this.authSessionDir(),
       estimatedRamMb: Math.max(180, this.profiles.length * 110),
       latestError
