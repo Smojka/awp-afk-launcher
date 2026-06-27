@@ -94,6 +94,7 @@ Current release-prep verification for this workspace returned `found 0 vulnerabi
    - Choose Custom command for a plugin-specific command.
    - Set Auth password if the selected command needs `{password}`.
    - Set Transfer command, for example `/smp`.
+   - Add optional Flow commands after transfer when the account should move or teleport, for example `Home | /home base | 1500`.
    - Tune auth and transfer delays if the lobby is slow.
 5. Configure AFK routine controls.
 6. Save the profile.
@@ -228,6 +229,7 @@ Suggested profile shape for Arkonas-style lobby auth:
 - Login command: `/login {password}`
 - Register command: `/register {password} {password}`
 - Transfer command: `/smp`
+- Flow commands: optional post-transfer commands such as `/home base`, `/warp afk`, or another server-approved teleport command.
 - Auth delay: start around `2500` ms.
 - Transfer delay: start around `3500` ms.
 
@@ -254,21 +256,34 @@ npm run package:web:win
 
 Expected output paths:
 
-- `release/ChunkKeeper-0.1.3-arm64.dmg`
-- `release/ChunkKeeper-Setup-0.1.3-x64.exe`
-- `release/ChunkKeeper-Web-0.1.3-arm64.dmg`
-- `release/ChunkKeeper-Web-Portable-0.1.3-x64.exe`
+- `release/ChunkKeeper-0.1.4-arm64.dmg`
+- `release/ChunkKeeper-Setup-0.1.4-x64.exe`
+- `release/ChunkKeeper-Web-0.1.4-arm64.dmg`
+- `release/ChunkKeeper-Web-Portable-0.1.4-x64.exe`
+- `release/ChunkKeeper-macOS-First-Run.zip`
 
 `release/`, `dist/`, and `dist-electron/` are ignored by git. Upload release binaries to GitHub Releases or your distribution channel. Do not commit generated installers.
 
 GitHub Releases are created by normal version tags, for example:
 
 ```bash
-git tag v0.1.3
-git push origin v0.1.3
+git tag v0.1.4
+git push origin v0.1.4
 ```
 
-That workflow builds fresh DMG and EXE artifacts in GitHub Actions and uploads them to the GitHub Release. The app is distributed directly from GitHub, so macOS or Windows may ask for confirmation the first time it is opened.
+That workflow builds fresh DMG and EXE artifacts in GitHub Actions and uploads them to the GitHub Release. ChunkKeeper does not require paid Apple Developer ID credentials to publish.
+
+macOS may show "Apple could not verify" for direct GitHub downloads. The release includes `ChunkKeeper-macOS-First-Run.zip` for that first launch:
+
+1. Open the ChunkKeeper DMG.
+2. Extract `ChunkKeeper-macOS-First-Run.zip`.
+3. Run `ChunkKeeper-macOS-First-Run.command`.
+
+The helper copies the mounted app to Applications when needed, removes the quarantine flag, and opens ChunkKeeper. If macOS will not open the helper by double-click, run it from Terminal:
+
+```bash
+bash ~/Downloads/ChunkKeeper-macOS-First-Run.command
+```
 
 ## Release Checklist
 
@@ -324,4 +339,4 @@ docs/                      Research and runtime notes
 - Bot starves: enable auto-eat, carry safe food, and check `eatAtFood` and `pauseAtFood`.
 - Reconnect loops: check server kicks, auth state, max attempts, and backoff settings.
 - Windows reputation warning: download from the GitHub Release page and keep filenames/versioning consistent between releases.
-- macOS "damaged" warning: remove the old app, download the latest DMG from GitHub Releases, then copy `ChunkKeeper.app` to Applications again. If macOS keeps the old quarantine flag, run `xattr -dr com.apple.quarantine /Applications/ChunkKeeper.app`.
+- macOS "Apple could not verify" warning: open the DMG, run `ChunkKeeper-macOS-First-Run.command`, then choose Open if macOS shows the normal first-launch confirmation.

@@ -27,7 +27,8 @@ export const demoProfiles: AccountProfile[] = [
       authPassword: '',
       authDelayMs: 2500,
       transferCommand: '/smp',
-      transferDelayMs: 3500
+      transferDelayMs: 3500,
+      flowCommands: []
     },
     routine: {
       randomLook: true,
@@ -67,7 +68,8 @@ export const demoProfiles: AccountProfile[] = [
       authPassword: '',
       authDelayMs: 2500,
       transferCommand: '/smp',
-      transferDelayMs: 3500
+      transferDelayMs: 3500,
+      flowCommands: []
     },
     routine: {
       randomLook: true,

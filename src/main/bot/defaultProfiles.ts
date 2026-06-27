@@ -31,7 +31,8 @@ const defaultStartup = {
   authPassword: '',
   authDelayMs: 2500,
   transferCommand: '/smp',
-  transferDelayMs: 3500
+  transferDelayMs: 3500,
+  flowCommands: []
 };
 
 const arkonasStartup = {

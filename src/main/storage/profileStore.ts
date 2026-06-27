@@ -50,6 +50,7 @@ function stripProfileSecrets(profile: AccountProfile): AccountProfile {
     ...profile,
     startup: {
       ...profile.startup,
+      flowCommands: (profile.startup.flowCommands ?? []).map((step) => ({ ...step })),
       authPassword: ''
     },
     routine: {

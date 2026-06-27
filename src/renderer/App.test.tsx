@@ -223,6 +223,7 @@ describe('ChunkKeeper UI', () => {
     expect(within(dialog).getByText('Lobby auth')).toBeInTheDocument();
     expect(within(dialog).getByText('Login command')).toBeInTheDocument();
     expect(within(dialog).getByText('Register command')).toBeInTheDocument();
+    expect(within(dialog).getByText('Flow commands')).toBeInTheDocument();
     expect(within(dialog).getByText('Reconnect policy')).toBeInTheDocument();
   });
 
@@ -251,7 +252,8 @@ describe('ChunkKeeper UI', () => {
 
     expect(buttonsWithoutAdjacentHelp(container)).toEqual([]);
     const sliders = Array.from(container.querySelectorAll('.slider'));
-    expect(sliders.length).toBeGreaterThanOrEqual(8);
+    // Cactus "Layers" slider is hidden while the auto-farm build toggle is on (default).
+    expect(sliders.length).toBeGreaterThanOrEqual(7);
     expect(sliders.every((slider) => slider.querySelector('.help-tip'))).toBe(true);
     const connectHelp = screen.getByLabelText(/Seçili hesabı bağlar/i);
     expect(connectHelp).toBeInTheDocument();

@@ -5,6 +5,8 @@ import {
   Boxes,
   Bot,
   Check,
+  ChevronUp,
+  ChevronDown,
   CircleAlert,
   CircleHelp,
   FolderOpen,
@@ -77,8 +79,8 @@ const OPERATION_TITLES: Record<OperationKind, string> = {
 };
 
 const DEFAULT_MODULES_UI: BotModulesConfig = {
-  cactusFarm: { enabled: false, layers: 2, radius: 2, placementDelayMs: 550 },
-  cropFarm: { enabled: false, crop: 'wheat', radius: 4, harvestDelayMs: 750, replant: true, collectDrops: true },
+  cactusFarm: { enabled: false, layers: 1, radius: 2, placementDelayMs: 550, build: true, breakBlock: 'oak_fence', buildCollection: true },
+  cropFarm: { enabled: false, crop: 'wheat', radius: 4, harvestDelayMs: 750, replant: true, collectDrops: true, build: true, autoTill: true, waterMode: 'auto' },
   area: {
     enabled: false,
     mode: 'mine',
@@ -270,11 +272,13 @@ export function App({ api }: { api?: LauncherApi } = {}) {
 
   if (!state || !draft || !apiClient) {
     return (
-      <main className="boot">
+      <main className={`boot${error ? ' is-error' : ''}`} role="status" aria-live="polite" aria-busy={!error}>
         <div className="boot__mark">
           <BrandMark className="boot__glyph" />
           <span>{APP_NAME}</span>
           <small className="boot__credit">{DEVELOPER_CREDIT}</small>
+          {error ? null : <div className="boot__bar" aria-hidden="true" />}
+          {error ? null : <span className="sr-only">{`Starting ${APP_NAME}…`}</span>}
           {error ? <small className="boot__error">{error}</small> : null}
         </div>
       </main>
@@ -769,6 +773,7 @@ function ServerProfileSummary({
   onEdit: () => void;
   onSave: () => void;
 }) {
+  const flowCommandCount = (draft.startup.flowCommands ?? []).filter((step) => step.command.trim()).length;
   return (
     <section className="panel profile-summary">
       <div className="panel__head">
@@ -797,6 +802,7 @@ function ServerProfileSummary({
         <SummaryItem label="Proxy" value={profileProxy(draft).enabled ? `${profileProxy(draft).type} ${profileProxy(draft).host}` : 'Off'} empty={!profileProxy(draft).enabled} />
         <SummaryItem label="Lobby auth" value={draft.startup.enabled ? lobbyAuthLabel(draft.startup.authMode) : 'Off'} />
         <SummaryItem label="Transfer" value={draft.startup.transferCommand || 'None'} mono empty={!draft.startup.transferCommand} />
+        <SummaryItem label="Flow cmds" value={String(flowCommandCount)} empty={flowCommandCount === 0} />
         <SummaryItem label="Reconnect" value={draft.reconnect.enabled ? `${draft.reconnect.maxAttempts} attempts` : 'Off'} />
       </div>
     </section>
@@ -1288,11 +1294,14 @@ function OperationsPanel({
         <div className="operation-strip">
           {OPERATION_KINDS.map((kind) => {
             const operation = session?.operations?.[kind];
+            const progress =
+              operation && operation.total ? `${operation.completed}/${operation.total}` : null;
             return (
-              <div className="operation-chip" key={kind}>
+              <div className="operation-chip" key={kind} title={operation?.detail ?? undefined}>
                 <span>{OPERATION_TITLES[kind]}</span>
                 <strong className={`operation-chip__state operation-chip__state--${operation?.state ?? 'idle'}`}>
                   {operation?.state ?? 'idle'}
+                  {progress ? ` ${progress}` : ''}
                 </strong>
               </div>
             );
@@ -1314,15 +1323,23 @@ function OperationsPanel({
               />
             </div>
             <div className="module-card__body">
-              <Slider
-                label="Layers"
-                help="Kaktüs farm için üst üste kurulacak kat sayısıdır."
-                min={1}
-                max={12}
-                value={modules.cactusFarm.layers}
-                display={`${modules.cactusFarm.layers}`}
-                onChange={(value) => updateCactus({ layers: value })}
+              <Toggle
+                label="Otomatik farm kur"
+                help="Sadece kaktüs dikmek yerine kıran blok + toplama hattı içeren tam otomatik farm kurar. Bot her bloğa yürüyerek inşa eder."
+                checked={modules.cactusFarm.build}
+                onChange={(value) => updateCactus({ build: value })}
               />
+              {!modules.cactusFarm.build && (
+                <Slider
+                  label="Layers"
+                  help="Kaktüs farm için üst üste kurulacak kat sayısıdır (yalnızca otomatik farm kapalıyken)."
+                  min={1}
+                  max={12}
+                  value={modules.cactusFarm.layers}
+                  display={`${modules.cactusFarm.layers}`}
+                  onChange={(value) => updateCactus({ layers: value })}
+                />
+              )}
               <Slider
                 label="Radius"
                 help="Botun bulunduğu noktanın çevresinde kullanılacak farm yarıçapıdır."
@@ -1332,6 +1349,20 @@ function OperationsPanel({
                 display={`${modules.cactusFarm.radius}`}
                 onChange={(value) => updateCactus({ radius: value })}
               />
+              {modules.cactusFarm.build && (
+                <label className="field">
+                  <span className="field__label">Kırma bloğu</span>
+                  <select
+                    value={modules.cactusFarm.breakBlock}
+                    onChange={(event) =>
+                      updateCactus({ breakBlock: event.target.value as BotModulesConfig['cactusFarm']['breakBlock'] })
+                    }
+                  >
+                    <option value="oak_fence">Çit (oak fence)</option>
+                    <option value="glass_pane">Cam paneli</option>
+                  </select>
+                </label>
+              )}
               <Field
                 label="Place delay"
                 value={String(modules.cactusFarm.placementDelayMs)}
@@ -1340,6 +1371,14 @@ function OperationsPanel({
                 inputMode="numeric"
                 onChange={(value) => updateCactus({ placementDelayMs: Number(value) || 0 })}
               />
+              {modules.cactusFarm.build && (
+                <Toggle
+                  label="Toplama hattı"
+                  help="Düşen kaktüsleri toplamak için kırma bloğunun altına hopper hattı yerleştirir."
+                  checked={modules.cactusFarm.buildCollection}
+                  onChange={(value) => updateCactus({ buildCollection: value })}
+                />
+              )}
             </div>
           </section>
 
@@ -1389,7 +1428,33 @@ function OperationsPanel({
                 inputMode="numeric"
                 onChange={(value) => updateCrop({ harvestDelayMs: Number(value) || 0 })}
               />
+              {modules.cropFarm.build && (
+                <label className="field">
+                  <span className="field__label">Su kaynağı</span>
+                  <select
+                    value={modules.cropFarm.waterMode}
+                    onChange={(event) =>
+                      updateCrop({ waterMode: event.target.value as BotModulesConfig['cropFarm']['waterMode'] })
+                    }
+                  >
+                    <option value="auto">Otomatik (kova ile)</option>
+                    <option value="existing">Mevcut suyu kullan</option>
+                  </select>
+                </label>
+              )}
               <div className="toggles toggles--inline">
+                <Toggle
+                  label="Tarlayı kur"
+                  help="Hasattan önce toprağı çapalar, merkeze su koyar ve tohumları diker. Yalnızca buğday/havuç/patates/pancar için çalışır."
+                  checked={modules.cropFarm.build}
+                  onChange={(value) => updateCrop({ build: value })}
+                />
+                <Toggle
+                  label="Otomatik çapala"
+                  help="İnşa sırasında mevcut toprağı/çimi otomatik olarak tarlaya (farmland) çevirir."
+                  checked={modules.cropFarm.autoTill}
+                  onChange={(value) => updateCrop({ autoTill: value })}
+                />
                 <Toggle
                   label="Replant"
                   help="Hasattan sonra uygun tohum/ürün varsa aynı bloğa yeniden dikmeyi dener."
@@ -1515,24 +1580,28 @@ function OperationsPanel({
                 checked={modules.script.loop}
                 onChange={(value) => updateScript({ loop: value })}
               />
-              <label className="field">
+              <div className="field">
                 <span className="field__label">Script steps</span>
-                <textarea
-                  rows={4}
-                  value={scriptStepsToText(modules.script.steps)}
-                  onChange={(event) => updateScript({ steps: textToScriptSteps(event.target.value, 'step') })}
-                  placeholder="/spawn | 1000"
+                <ScriptStepList
+                  steps={modules.script.steps}
+                  prefix="step"
+                  onChange={(steps) => updateScript({ steps })}
+                  commandPlaceholder="/spawn"
+                  emptyHint="No script steps yet — they run top to bottom when the script starts."
                 />
-              </label>
-              <label className="field">
+              </div>
+              <div className="field">
                 <span className="field__label">Quick buttons</span>
-                <textarea
-                  rows={3}
-                  value={scriptStepsToText(modules.script.quickCommands)}
-                  onChange={(event) => updateScript({ quickCommands: textToScriptSteps(event.target.value, 'quick') })}
-                  placeholder="/home | 0"
+                <ScriptStepList
+                  steps={modules.script.quickCommands}
+                  prefix="quick"
+                  onChange={(quickCommands) => updateScript({ quickCommands })}
+                  commandPlaceholder="/home"
+                  addLabel="Add button"
+                  showDelay={false}
+                  emptyHint="No quick buttons yet — each becomes a one-tap command below."
                 />
-              </label>
+              </div>
               <div className="quick-buttons">
                 {modules.script.quickCommands.map((step) => (
                   <ActionWithHelp key={step.id} help={`${step.command} komutunu seçili çevrimiçi bota hemen gönderir.`}>
@@ -2117,11 +2186,11 @@ function StartupFlowPanel({ draft, onChange }: { draft: DraftProfile; onChange: 
       <div className="joinflow__head">
         <Toggle
           label="Join flow"
-          help="Sunucu önce lobby'ye alıyorsa açılır. Bağlantıdan sonra auth/register komutu, ardından transfer komutu sırayla gönderilir."
+          help="Sunucu önce lobby'ye alıyorsa açılır. Bağlantıdan sonra auth/register, transfer ve opsiyonel flow komutları sırayla gönderilir."
           checked={startup.enabled}
           onChange={(value) => updateStartup({ enabled: value })}
         />
-        <span className="joinflow__hint">Lobby auth → SMP transfer</span>
+        <span className="joinflow__hint">Lobby auth → SMP transfer → flow commands</span>
       </div>
       <div className="joinflow__grid" data-disabled={!startup.enabled}>
         <label className="field">
@@ -2177,6 +2246,16 @@ function StartupFlowPanel({ draft, onChange }: { draft: DraftProfile; onChange: 
           inputMode="numeric"
           onChange={(value) => updateStartup({ transferDelayMs: Number(value) || 0 })}
         />
+        <div className="field field--wide">
+          <span className="field__label">Flow commands</span>
+          <ScriptStepList
+            steps={startup.flowCommands ?? []}
+            prefix="flow"
+            onChange={(steps) => updateStartup({ flowCommands: steps })}
+            commandPlaceholder="/home base"
+            emptyHint="No flow commands yet — they run in order after the SMP transfer."
+          />
+        </div>
       </div>
     </form>
   );
@@ -2219,6 +2298,123 @@ function Field({
       />
     </label>
   );
+}
+
+function ScriptStepList({
+  steps,
+  prefix,
+  onChange,
+  commandPlaceholder,
+  addLabel = 'Add command',
+  showDelay = true,
+  emptyHint
+}: {
+  steps: ScriptStep[];
+  prefix: string;
+  onChange: (steps: ScriptStep[]) => void;
+  commandPlaceholder?: string;
+  addLabel?: string;
+  showDelay?: boolean;
+  emptyHint?: string;
+}) {
+  const updateStep = (index: number, patch: Partial<ScriptStep>) =>
+    onChange(steps.map((step, i) => (i === index ? { ...step, ...patch } : step)));
+  const removeStep = (index: number) => onChange(steps.filter((_, i) => i !== index));
+  const moveStep = (index: number, dir: -1 | 1) => {
+    const target = index + dir;
+    if (target < 0 || target >= steps.length) return;
+    const next = steps.slice();
+    [next[index], next[target]] = [next[target], next[index]];
+    onChange(next);
+  };
+  const addStep = () =>
+    onChange([...steps, { id: makeStepId(prefix), label: '', command: '', delayMs: 0 }]);
+
+  return (
+    <div className={`step-list ${showDelay ? '' : 'step-list--no-delay'}`}>
+      {steps.length > 0 ? (
+        <div className="step-list__head" aria-hidden>
+          <span>Label</span>
+          <span>Command</span>
+          {showDelay ? <span>Delay</span> : null}
+          <span />
+        </div>
+      ) : null}
+      {steps.map((step, index) => (
+        <div className="step-list__row" key={step.id}>
+          <input
+            value={step.label}
+            placeholder={`${prefix} ${index + 1}`}
+            aria-label={`Step ${index + 1} label`}
+            autoCapitalize="none"
+            spellCheck={false}
+            onChange={(event) => updateStep(index, { label: event.target.value })}
+          />
+          <input
+            className="mono"
+            value={step.command}
+            placeholder={commandPlaceholder ?? '/command'}
+            aria-label={`Step ${index + 1} command`}
+            autoCapitalize="none"
+            spellCheck={false}
+            onChange={(event) => updateStep(index, { command: event.target.value })}
+          />
+          {showDelay ? (
+            <span className="step-list__delay">
+              <input
+                className="mono"
+                value={String(step.delayMs)}
+                inputMode="numeric"
+                aria-label={`Step ${index + 1} delay in milliseconds`}
+                onChange={(event) => updateStep(index, { delayMs: Number(event.target.value) || 0 })}
+              />
+              <em>ms</em>
+            </span>
+          ) : null}
+          <div className="step-list__actions">
+            <button
+              type="button"
+              className="icon-btn icon-btn--sm"
+              aria-label={`Move step ${index + 1} up`}
+              disabled={index === 0}
+              onClick={() => moveStep(index, -1)}
+            >
+              <ChevronUp size={14} />
+            </button>
+            <button
+              type="button"
+              className="icon-btn icon-btn--sm"
+              aria-label={`Move step ${index + 1} down`}
+              disabled={index === steps.length - 1}
+              onClick={() => moveStep(index, 1)}
+            >
+              <ChevronDown size={14} />
+            </button>
+            <button
+              type="button"
+              className="icon-btn icon-btn--sm icon-btn--danger"
+              aria-label={`Remove step ${index + 1}`}
+              onClick={() => removeStep(index)}
+            >
+              <Trash2 size={14} />
+            </button>
+            <HelpTip text="Komutu sırada yukarı/aşağı taşı veya listeden kaldır. Komutlar yukarıdan aşağıya sırayla çalışır." />
+          </div>
+        </div>
+      ))}
+      {steps.length === 0 && emptyHint ? <p className="step-list__empty">{emptyHint}</p> : null}
+      <ActionWithHelp help="Listeye yeni bir komut satırı ekler. Label boş bırakılırsa otomatik adlandırılır; boş satırlar kaydederken atılır.">
+        <button type="button" className="btn btn--sm step-list__add" onClick={addStep}>
+          <Plus size={13} />
+          {addLabel}
+        </button>
+      </ActionWithHelp>
+    </div>
+  );
+}
+
+function makeStepId(prefix: string) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.round(Math.random() * 1e6).toString(36)}`;
 }
 
 function Toggle({
@@ -2380,6 +2576,7 @@ function createNewAccountDraft(template: DraftProfile, settings: AppSettings, ac
     enabled: true,
     startup: {
       ...template.startup,
+      flowCommands: (template.startup.flowCommands ?? []).map((step) => ({ ...step })),
       authPassword: ''
     },
     routine: {
@@ -2412,7 +2609,8 @@ function normalizeDraft(draft: DraftProfile): SaveProfileInput {
       authPassword: draft.startup.authPassword,
       authDelayMs: Math.max(0, Number(draft.startup.authDelayMs) || 0),
       transferCommand: draft.startup.transferCommand.trim(),
-      transferDelayMs: Math.max(0, Number(draft.startup.transferDelayMs) || 0)
+      transferDelayMs: Math.max(0, Number(draft.startup.transferDelayMs) || 0),
+      flowCommands: normalizeDraftScriptSteps(draft.startup.flowCommands ?? [], 'flow')
     },
     routine: {
       ...draft.routine,
@@ -2448,9 +2646,11 @@ function profileModules(profile: DraftProfile): BotModulesConfig {
     script: {
       ...DEFAULT_MODULES_UI.script,
       ...modules?.script,
-      steps: modules?.script?.steps?.length ? modules.script.steps.map((step) => ({ ...step })) : DEFAULT_MODULES_UI.script.steps,
+      steps: modules?.script?.steps?.length
+        ? normalizeDraftScriptSteps(modules.script.steps, 'step')
+        : DEFAULT_MODULES_UI.script.steps,
       quickCommands: modules?.script?.quickCommands?.length
-        ? modules.script.quickCommands.map((step) => ({ ...step }))
+        ? normalizeDraftScriptSteps(modules.script.quickCommands, 'quick')
         : DEFAULT_MODULES_UI.script.quickCommands
     },
     discord: { ...DEFAULT_MODULES_UI.discord, ...modules?.discord },
@@ -2468,26 +2668,14 @@ function profileProxy(profile: DraftProfile): ProxyConfig {
   return { ...DEFAULT_PROXY_UI, ...profile.proxy };
 }
 
-function scriptStepsToText(steps: ScriptStep[]): string {
-  return steps.map((step) => `${step.label} | ${step.command} | ${step.delayMs}`).join('\n');
-}
-
-function textToScriptSteps(value: string, prefix: string): ScriptStep[] {
-  return value
-    .split('\n')
-    .map((line, index) => {
-      const [first = '', second = '', third = ''] = line.split('|').map((part) => part.trim());
-      const hasThreeColumns = Boolean(third);
-      const label = hasThreeColumns ? first : `${prefix} ${index + 1}`;
-      const command = hasThreeColumns ? second : first;
-      const delayMs = Number(hasThreeColumns ? third : second) || 0;
-      return {
-        id: `${prefix}-${index + 1}`,
-        label,
-        command,
-        delayMs
-      };
-    })
+function normalizeDraftScriptSteps(steps: ScriptStep[], prefix: string): ScriptStep[] {
+  return steps
+    .map((step, index) => ({
+      id: step.id.trim() || `${prefix}-${index + 1}`,
+      label: step.label.trim() || `${prefix} ${index + 1}`,
+      command: step.command.trim(),
+      delayMs: Math.max(0, Number(step.delayMs) || 0)
+    }))
     .filter((step) => step.command);
 }
 

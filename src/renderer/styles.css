@@ -227,6 +227,20 @@ textarea {
   font-size: 16px;
   font-weight: 600;
   color: var(--text-soft);
+  /* One-time materialize: opacity + lift + blur, expo-out to match the shell. */
+  animation: boot-materialize 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes boot-materialize {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
 }
 .boot__error {
   flex-basis: 100%;
@@ -257,15 +271,55 @@ textarea {
   background: var(--accent-subtle);
   border: 1px solid var(--glass-edge);
   color: var(--accent-strong);
-  animation: glow-pulse 1.8s ease-in-out infinite;
 }
-@keyframes glow-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0);
+
+/* Functional loading indicator: one honest indeterminate sweep that says
+   "working", not a breathing glow. Hidden once loading fails (error state). */
+.boot__bar {
+  position: relative;
+  flex-basis: 100%;
+  width: min(180px, 40vw);
+  height: 2px;
+  margin: 4px auto 0;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: rgba(139, 92, 246, 0.12);
+}
+.boot__bar::before {
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  content: "";
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--accent-strong), transparent);
+  transform: translateX(-120%);
+  animation: boot-sweep 1.4s linear infinite;
+}
+@keyframes boot-sweep {
+  to {
+    transform: translateX(350%);
   }
-  50% {
-    box-shadow: 0 0 16px 2px rgba(139, 92, 246, 0.28);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Reduced motion: drop the sweep, leave a calm static track so the
+   indicator still reads as present rather than broken/empty. */
+@media (prefers-reduced-motion: reduce) {
+  .boot__bar::before {
+    width: 100%;
+    transform: none;
+    opacity: 0.45;
   }
 }
 @keyframes fade-in {
@@ -594,6 +648,15 @@ textarea {
 .icon-btn--danger:hover:not(:disabled) {
   border-color: rgb(244 63 94 / 0.5);
   color: rgb(251 113 133);
+}
+.icon-btn--sm {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius-sm);
+}
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* ---------- Native window controls ---------- */
@@ -1265,6 +1328,9 @@ textarea {
 .profile-editor .joinflow__grid .field {
   grid-column: span 2;
 }
+.profile-editor .joinflow__grid .field--wide {
+  grid-column: 1 / -1;
+}
 
 /* ---------- Join flow ---------- */
 .joinflow {
@@ -1292,8 +1358,93 @@ textarea {
   gap: 9px;
   transition: opacity var(--t);
 }
+.joinflow__grid .field--wide {
+  grid-column: 1 / -1;
+}
 .joinflow__grid[data-disabled="true"] {
   opacity: 0.45;
+}
+
+/* ---------- Script step list (flow / steps / quick) ---------- */
+.step-list {
+  display: grid;
+  gap: 7px;
+}
+.step-list__head,
+.step-list__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.6fr) 88px auto;
+  gap: 7px;
+  align-items: center;
+}
+.step-list--no-delay .step-list__head,
+.step-list--no-delay .step-list__row {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.6fr) auto;
+}
+.step-list__head {
+  padding: 0 2px;
+  color: var(--muted-dim);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.step-list__row input {
+  width: 100%;
+  min-height: 34px;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid rgb(39 39 42 / 0.95);
+  border-radius: var(--radius-sm);
+  background: rgb(9 9 11 / 0.9);
+  color: rgb(244 244 245);
+  font-size: 13px;
+  outline: none;
+  transition: border-color var(--t), box-shadow var(--t), background var(--t);
+}
+.step-list__row input::placeholder {
+  color: rgb(113 113 122);
+}
+.step-list__row input:focus {
+  border-color: rgb(129 140 248 / 0.7);
+  box-shadow: 0 0 0 3px rgb(99 102 241 / 0.14);
+}
+.step-list__delay {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.step-list__delay input {
+  padding-right: 26px;
+  text-align: right;
+}
+.step-list__delay em {
+  position: absolute;
+  right: 8px;
+  color: var(--muted-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-style: normal;
+  pointer-events: none;
+}
+.step-list__actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.step-list > .control-with-help {
+  justify-self: start;
+}
+.step-list__empty {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px dashed rgba(139, 92, 246, 0.28);
+  border-radius: var(--radius);
+  background: var(--accent-subtle);
+  color: var(--muted);
+  font-size: 12px;
+}
+.step-list__add {
+  justify-self: start;
 }
 
 /* ---------- Toggle (switch) ---------- */
@@ -2334,6 +2485,20 @@ textarea {
   .completion-row,
   .joinflow__grid {
     grid-template-columns: 1fr;
+  }
+  .step-list__head {
+    display: none;
+  }
+  .step-list__row,
+  .step-list--no-delay .step-list__row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .step-list__row .mono {
+    grid-column: 1 / -1;
+  }
+  .step-list__actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
   }
   .statusbar {
     overflow-x: auto;

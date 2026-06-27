@@ -114,6 +114,14 @@ type BotLike = RoutineBot &
     blockAt?: (position: PositionSnapshot | Vec3) => BlockLike | null;
     dig?: (block: BlockLike) => Promise<void> | void;
     placeBlock?: (referenceBlock: BlockLike, faceVector: Vec3) => Promise<void> | void;
+    activateBlock?: (block: BlockLike, faceVector?: Vec3, cursor?: Vec3) => Promise<void> | void;
+    activateItem?: (offhand?: boolean) => Promise<void> | void;
+    pathfinder?: {
+      goto?: (goal: unknown) => Promise<void>;
+      setMovements?: (movements: unknown) => void;
+      setGoal?: (goal: unknown | null) => void;
+    };
+    loadPlugin?: (plugin: unknown) => void;
     tabComplete?: (partial: string) => Promise<Array<string | { match?: string }>> | Array<string | { match?: string }>;
     quit?: (reason?: string) => void;
     respawn?: () => void;
@@ -146,13 +154,17 @@ interface ManagedSession {
   foodGuardActive: boolean;
   hungerPaused: boolean;
   lastFoodWarningAt: number;
+  /** Anchor used by the crop harvest loop after a build pass so it scans the field it just planted. */
+  cropFarmOrigin: PositionSnapshot | null;
   snapshot: BotSessionSnapshot;
 }
 
 type OperationWorkItem = {
-  action: 'dig' | 'place';
+  action: 'dig' | 'place' | 'till' | 'water';
   position: PositionSnapshot;
   itemName?: string;
+  /** Walk within reach before acting (build steps that may be outside the bot's stationary reach). */
+  walk?: boolean;
 };
 
 interface DiscordRuntime {
@@ -170,6 +182,15 @@ const DEFAULT_OPERATION_DELAY_MS = 550;
 const MAX_OPERATION_VOLUME = 4096;
 const DISCORD_API_BASE = 'https://discord.com/api/v10';
 const PLACE_BLOCK_TIMEOUT_MS = 10000;
+const PATHFIND_TIMEOUT_MS = 15000;
+
+// Populated once by defaultMineflayerFactory after the pathfinder plugin loads.
+// Tests inject their own factory, so these stay null there and every pathfinder
+// call (walkWithinReach) becomes a no-op — the bot simply acts within reach.
+type PathfinderMovementsCtor = new (bot: BotLike) => Record<string, unknown>;
+type PathfinderGoals = { GoalNear: new (x: number, y: number, z: number, range: number) => unknown };
+let pathfinderMovements: PathfinderMovementsCtor | null = null;
+let pathfinderGoals: PathfinderGoals | null = null;
 
 const OPERATION_LABELS: Record<OperationKind, string> = {
   cactusFarm: 'Cactus farm',
@@ -192,9 +213,12 @@ const DEFAULT_PROXY: ProxyConfig = {
 const DEFAULT_MODULES: BotModulesConfig = {
   cactusFarm: {
     enabled: false,
-    layers: 2,
+    layers: 1,
     radius: 2,
-    placementDelayMs: 550
+    placementDelayMs: 550,
+    build: true,
+    breakBlock: 'oak_fence',
+    buildCollection: true
   },
   cropFarm: {
     enabled: false,
@@ -202,7 +226,10 @@ const DEFAULT_MODULES: BotModulesConfig = {
     radius: 4,
     harvestDelayMs: 750,
     replant: true,
-    collectDrops: true
+    collectDrops: true,
+    build: true,
+    autoTill: true,
+    waterMode: 'auto'
   },
   area: {
     enabled: false,
@@ -685,6 +712,7 @@ export class BotManager extends EventEmitter {
         foodGuardActive: false,
         hungerPaused: false,
         lastFoodWarningAt: 0,
+        cropFarmOrigin: null,
         snapshot: createSessionSnapshot(profile.id)
       });
     }
@@ -713,6 +741,7 @@ export class BotManager extends EventEmitter {
 
   private attachBotEvents(session: ManagedSession, bot: BotLike): void {
     bot.on('spawn', () => {
+      configurePathfinderMovements(bot);
       const shouldRunStartup = !session.snapshot.startupActive && !session.startupCompleted;
       session.snapshot.connectedAt = new Date().toISOString();
       session.snapshot.reconnectAttempts = 0;
@@ -968,10 +997,12 @@ export class BotManager extends EventEmitter {
     const authCommand = renderAuthCommand(startup);
     const authLabel = startup.authMode === 'register' ? 'Lobby register sent' : 'Lobby auth sent';
     const transferCommand = startup.transferCommand.trim();
+    const flowCommands = startup.flowCommands.map((step) => ({ ...step, command: step.command.trim() })).filter((step) => step.command);
     const hasAuthCommand = Boolean(authCommand);
     const hasTransferCommand = Boolean(transferCommand);
+    const hasFlowCommands = flowCommands.length > 0;
 
-    if (!hasAuthCommand && !hasTransferCommand) {
+    if (!hasAuthCommand && !hasTransferCommand && !hasFlowCommands) {
       this.pushEvent(session, 'system', 'muted', 'Join flow skipped', 'No commands configured');
       this.startRoutine(session, bot);
       return;
@@ -1003,6 +1034,18 @@ export class BotManager extends EventEmitter {
           if (session.bot !== bot || session.desiredStop) return;
           bot.chat?.(transferCommand);
           this.pushEvent(session, 'chat', 'info', 'Server transfer sent', transferCommand);
+          this.emitState();
+        }, elapsed)
+      );
+    }
+
+    for (const step of flowCommands) {
+      elapsed += Math.max(0, step.delayMs);
+      session.startupTimers.push(
+        setTimeout(() => {
+          if (session.bot !== bot || session.desiredStop) return;
+          bot.chat?.(step.command);
+          this.pushEvent(session, 'chat', 'info', step.label || 'Flow command sent', redactSensitiveText(step.command));
           this.emitState();
         }, elapsed)
       );
@@ -1063,36 +1106,97 @@ export class BotManager extends EventEmitter {
       this.blockOperation(session, 'cactusFarm', 'Bot position is unavailable.');
       return;
     }
-    const plan = cactusPlan(origin, config);
-    const sandNeeded = plan.filter((item) => item.itemName === 'sand').length;
-    const cactusNeeded = plan.filter((item) => item.itemName === 'cactus').length;
-    const sandCount = inventoryItemCount(bot, 'sand');
-    const cactusCount = inventoryItemCount(bot, 'cactus');
-    if (sandCount < sandNeeded || cactusCount < cactusNeeded) {
-      this.blockOperation(
-        session,
-        'cactusFarm',
-        `Missing materials: sand ${sandCount}/${sandNeeded}, cactus ${cactusCount}/${cactusNeeded}.`
-      );
+    const plan = cactusFarmPlan(origin, config);
+    const needs = cactusMaterialNeeds(plan);
+    const missing = Object.entries(needs)
+      .map(([itemName, need]) => ({ itemName, need, have: inventoryItemCount(bot, itemName) }))
+      .filter((entry) => entry.have < entry.need);
+    if (missing.length > 0) {
+      const detail = missing.map((entry) => `${entry.itemName} ${entry.have}/${entry.need}`).join(', ');
+      this.blockOperation(session, 'cactusFarm', `Missing materials: ${detail}.`);
       return;
     }
     session.operationQueues.set('cactusFarm', plan);
-    this.updateOperation(session, 'cactusFarm', 'running', `Building ${config.layers} layer cactus farm`, {
-      completed: 0,
-      total: plan.length,
-      stats: { sandNeeded, cactusNeeded }
-    });
+    this.updateOperation(
+      session,
+      'cactusFarm',
+      'running',
+      config.build ? 'Building automatic cactus farm' : 'Planting cactus columns',
+      {
+        completed: 0,
+        total: plan.length,
+        stats: needs
+      }
+    );
     this.scheduleOperationQueue(session, bot, 'cactusFarm', config.placementDelayMs);
   }
 
   private startCropFarm(session: ManagedSession, bot: BotLike, config: CropFarmConfig): void {
-    this.updateOperation(session, 'cropFarm', 'running', `${cropLabel(config.crop)} farm loop active`, {
+    session.cropFarmOrigin = null;
+    if (!config.build || !isFarmlandCrop(config.crop)) {
+      if (config.build && !isFarmlandCrop(config.crop)) {
+        this.pushEvent(session, 'farm', 'warn', 'Crop build skipped', `${cropLabel(config.crop)} farmland'e dikilmez, hasat döngüsüne geçiliyor.`);
+      }
+      this.beginCropHarvest(session, bot, config);
+      return;
+    }
+    const origin = botPosition(bot);
+    if (!origin) {
+      this.blockOperation(session, 'cropFarm', 'Bot position is unavailable.');
+      return;
+    }
+    const plan = cropBuildPlan(origin, config);
+    const seed = cropSeedName(config.crop);
+
+    // Material check: enough seeds for every cell, a hoe when auto-tilling.
+    const seedHave = inventoryItemCount(bot, seed);
+    const missing: string[] = [];
+    if (seedHave < plan.plant.length) missing.push(`${seed} ${seedHave}/${plan.plant.length}`);
+    if (config.autoTill && !findHoe(bot)) missing.push('hoe 0/1');
+
+    // Decide on water before tilling: skip if the field is already wet; with
+    // auto-water and no existing source we need a bucket and dig the centre.
+    const hasWater = plan.footprint.some((position) => {
+      const block = typeof bot.blockAt === 'function' ? bot.blockAt(toVec3(position)) : null;
+      return block?.name === 'water';
+    });
+    let waterSteps: OperationWorkItem[] = [];
+    if (!hasWater && config.waterMode === 'auto') {
+      if (inventoryItemCount(bot, 'water_bucket') < 1) missing.push('water_bucket 0/1');
+      waterSteps = [plan.centerDig, { action: 'water', position: plan.waterPos }];
+    }
+
+    if (missing.length > 0) {
+      this.blockOperation(session, 'cropFarm', `Missing materials: ${missing.join(', ')}.`);
+      return;
+    }
+    if (!hasWater && config.waterMode === 'existing') {
+      this.pushEvent(session, 'farm', 'warn', 'No water found', 'Tarlanın merkezine su koyun, aksi halde ürünler çok yavaş büyür.');
+    }
+
+    const queue = [...plan.prepare, ...waterSteps, ...plan.plant];
+    session.cropFarmOrigin = origin;
+    session.operationQueues.set('cropFarm', queue);
+    this.updateOperation(session, 'cropFarm', 'running', `Building ${cropLabel(config.crop)} farm`, {
+      completed: 0,
+      total: queue.length,
+      stats: { tilled: 0, watered: 0, planted: 0 }
+    });
+    this.scheduleOperationQueue(session, bot, 'cropFarm', config.harvestDelayMs, () => {
+      this.pushEvent(session, 'farm', 'ok', 'Crop farm built', `${plan.plant.length} cell ${cropLabel(config.crop)} tarlası hazır.`);
+      this.beginCropHarvest(session, bot, config);
+    });
+  }
+
+  private beginCropHarvest(session: ManagedSession, bot: BotLike, config: CropFarmConfig): void {
+    this.updateOperation(session, 'cropFarm', 'running', `${cropLabel(config.crop)} hasat döngüsü aktif`, {
+      completed: 0,
       total: null,
       stats: { harvested: 0, replanted: 0, collected: 0 }
     });
     const tick = () => {
       if (session.bot !== bot || session.snapshot.operations.cropFarm.state !== 'running') return;
-      const origin = botPosition(bot);
+      const origin = session.cropFarmOrigin ?? botPosition(bot);
       if (!origin) {
         this.blockOperation(session, 'cropFarm', 'Bot position is unavailable.');
         return;
@@ -1125,6 +1229,7 @@ export class BotManager extends EventEmitter {
     )) {
       const block = bot.blockAt(toVec3(position));
       if (!block || !isMatureCrop(block, config.crop)) continue;
+      await this.walkWithinReach(bot, position);
       await Promise.resolve(bot.dig(block));
       harvested += 1;
       if (config.replant && cropSeedName(config.crop) && inventoryItemCount(bot, cropSeedName(config.crop)) > 0) {
@@ -1265,8 +1370,9 @@ export class BotManager extends EventEmitter {
   private scheduleOperationQueue(
     session: ManagedSession,
     bot: BotLike,
-    kind: Extract<OperationKind, 'cactusFarm' | 'area' | 'generator'>,
-    delayMs: number
+    kind: Extract<OperationKind, 'cactusFarm' | 'cropFarm' | 'area' | 'generator'>,
+    delayMs: number,
+    onDrained?: () => void
   ): void {
     const tick = () => {
       if (session.bot !== bot || session.snapshot.operations[kind].state !== 'running') return;
@@ -1274,6 +1380,10 @@ export class BotManager extends EventEmitter {
       const work = queue.shift();
       if (!work) {
         this.stopOperationTimer(session, kind);
+        if (onDrained) {
+          onDrained();
+          return;
+        }
         this.updateOperation(session, kind, 'complete', `${OPERATION_LABELS[kind]} complete`, {
           total: session.snapshot.operations[kind].total
         });
@@ -1302,6 +1412,7 @@ export class BotManager extends EventEmitter {
           this.blockOperation(session, kind, 'Mineflayer block/dig APIs are unavailable.');
           return;
         }
+        if (work.walk) await this.walkWithinReach(bot, work.position);
         const block = bot.blockAt(toVec3(work.position));
         if (!block || isAirBlock(block)) {
           this.addOperationProgress(session, kind, 1, { skipped: 1 });
@@ -1309,8 +1420,24 @@ export class BotManager extends EventEmitter {
         }
         await Promise.resolve(bot.dig(block));
         this.addOperationProgress(session, kind, 1, { mined: 1 });
+      } else if (work.action === 'till') {
+        const tilled = await this.tillFarmland(bot, work.position);
+        if (!tilled) {
+          this.addOperationProgress(session, kind, 1, { skipped: 1 });
+          return;
+        }
+        this.addOperationProgress(session, kind, 1, { tilled: 1 });
+      } else if (work.action === 'water') {
+        const result = await this.placeWaterSource(bot, work.position);
+        if (!result.ok) {
+          this.blockOperation(session, kind, `Cannot place water at ${formatPosition(work.position)} (${result.reason}).`);
+          return;
+        }
+        this.addOperationProgress(session, kind, 1, { watered: 1 });
       } else {
-        const placed = await this.placeItemAt(bot, work.itemName ?? 'cobblestone', work.position);
+        const placed = work.walk
+          ? await this.placeBlockAgainst(bot, work.itemName ?? 'cobblestone', work.position, { walk: true })
+          : await this.placeItemAt(bot, work.itemName ?? 'cobblestone', work.position);
         if (!placed) {
           this.blockOperation(session, kind, `Cannot place ${work.itemName ?? 'block'} at ${formatPosition(work.position)}.`);
           return;
@@ -1338,6 +1465,113 @@ export class BotManager extends EventEmitter {
       `place ${itemName}`
     );
     return true;
+  }
+
+  // Walk close enough to act on a target. No-op without the pathfinder plugin
+  // (e.g. in unit tests), so callers must still tolerate out-of-reach failures.
+  private async walkWithinReach(bot: BotLike, position: PositionSnapshot, range = 3): Promise<void> {
+    if (!pathfinderGoals || typeof bot.pathfinder?.goto !== 'function') return;
+    const here = botPosition(bot);
+    if (here && Math.abs(here.x - position.x) + Math.abs(here.z - position.z) <= range && Math.abs(here.y - position.y) <= 4) {
+      return;
+    }
+    try {
+      const goal = new pathfinderGoals.GoalNear(position.x, position.y, position.z, range);
+      await withTimeout(Promise.resolve(bot.pathfinder.goto(goal)), PATHFIND_TIMEOUT_MS, 'pathfind');
+    } catch {
+      // A failed walk just means the subsequent place/dig will fail with a clear
+      // blocked message — no need to surface the pathfinding error itself.
+    }
+  }
+
+  // Like placeItemAt but can anchor on any solid neighbour (not just the block
+  // below), and optionally walks within reach first. Idempotent: if the target
+  // cell is already filled it returns true, so re-running a build resumes cleanly.
+  private async placeBlockAgainst(
+    bot: BotLike,
+    itemName: string,
+    position: PositionSnapshot,
+    opts: { walk?: boolean } = {}
+  ): Promise<boolean> {
+    if (typeof bot.blockAt !== 'function' || typeof bot.placeBlock !== 'function' || typeof bot.equip !== 'function') {
+      return false;
+    }
+    const item = findInventoryItem(bot, itemName);
+    if (!item) return false;
+    if (opts.walk) await this.walkWithinReach(bot, position);
+    const target = bot.blockAt(toVec3(position));
+    if (target && !isAirBlock(target)) return true;
+
+    // below first (back-compat with placeItemAt), then the 4 sides, then above.
+    const faces: Array<{ off: PositionSnapshot; face: Vec3 }> = [
+      { off: { x: 0, y: -1, z: 0 }, face: new Vec3(0, 1, 0) },
+      { off: { x: -1, y: 0, z: 0 }, face: new Vec3(1, 0, 0) },
+      { off: { x: 1, y: 0, z: 0 }, face: new Vec3(-1, 0, 0) },
+      { off: { x: 0, y: 0, z: -1 }, face: new Vec3(0, 0, 1) },
+      { off: { x: 0, y: 0, z: 1 }, face: new Vec3(0, 0, -1) },
+      { off: { x: 0, y: 1, z: 0 }, face: new Vec3(0, -1, 0) }
+    ];
+    for (const candidate of faces) {
+      const reference = bot.blockAt(toVec3(addPosition(position, candidate.off)));
+      if (!reference || isAirBlock(reference)) continue;
+      await Promise.resolve(bot.equip(item, 'hand'));
+      try {
+        await withTimeout(
+          Promise.resolve(bot.placeBlock(reference, candidate.face)),
+          PLACE_BLOCK_TIMEOUT_MS,
+          `place ${itemName}`
+        );
+        return true;
+      } catch {
+        // try the next face
+      }
+    }
+    return false;
+  }
+
+  // Turn dirt/grass into farmland with a hoe. Returns false (skip) when there is
+  // no hoe, the block isn't tillable, or the activate API is unavailable.
+  private async tillFarmland(bot: BotLike, position: PositionSnapshot): Promise<boolean> {
+    if (typeof bot.blockAt !== 'function' || typeof bot.equip !== 'function' || typeof bot.activateBlock !== 'function') {
+      return false;
+    }
+    const hoe = findHoe(bot);
+    if (!hoe) return false;
+    await this.walkWithinReach(bot, position);
+    const block = bot.blockAt(toVec3(position));
+    if (!block) return false;
+    if (block.name === 'farmland') return true;
+    if (!isTillable(block)) return false;
+    await Promise.resolve(bot.equip(hoe, 'hand'));
+    await withTimeout(Promise.resolve(bot.activateBlock(block, new Vec3(0, 1, 0))), PLACE_BLOCK_TIMEOUT_MS, 'till');
+    return true;
+  }
+
+  // Place a water source with a bucket. Bucket support in mineflayer is flaky, so
+  // callers must handle { ok:false } gracefully (fall back to existing water).
+  private async placeWaterSource(
+    bot: BotLike,
+    position: PositionSnapshot
+  ): Promise<{ ok: boolean; reason: string }> {
+    if (typeof bot.blockAt !== 'function') return { ok: false, reason: 'no_api' };
+    const existing = bot.blockAt(toVec3(position));
+    if (existing && existing.name === 'water') return { ok: true, reason: 'already_water' };
+    const bucket = findInventoryItem(bot, 'water_bucket');
+    if (!bucket) return { ok: false, reason: 'no_bucket' };
+    if (typeof bot.equip !== 'function' || typeof bot.activateItem !== 'function') {
+      return { ok: false, reason: 'no_api' };
+    }
+    await this.walkWithinReach(bot, position, 2);
+    await Promise.resolve(bot.lookAt?.(toVec3({ x: position.x, y: position.y, z: position.z }), true));
+    await Promise.resolve(bot.equip(bucket, 'hand'));
+    try {
+      await withTimeout(Promise.resolve(bot.activateItem()), PLACE_BLOCK_TIMEOUT_MS, 'place water');
+    } catch {
+      return { ok: false, reason: 'activate_failed' };
+    }
+    const after = bot.blockAt(toVec3(position));
+    if (after && after.name === 'water') return { ok: true, reason: 'placed' };
+    return { ok: false, reason: 'not_water' };
   }
 
   private stopAllOperations(session: ManagedSession): void {
@@ -1606,7 +1840,47 @@ async function defaultMineflayerFactory(options: MineflayerOptions): Promise<Bot
   if (!createBot) {
     throw new Error('mineflayer createBot() was not found');
   }
-  return createBot(options) as unknown as BotLike;
+  const bot = createBot(options) as unknown as BotLike;
+  await loadPathfinderPlugin(bot);
+  return bot;
+}
+
+async function loadPathfinderPlugin(bot: BotLike): Promise<void> {
+  try {
+    type PathfinderModule = {
+      pathfinder?: unknown;
+      Movements?: PathfinderMovementsCtor;
+      goals?: PathfinderGoals;
+      default?: PathfinderModule;
+    };
+    const imported = (await import('mineflayer-pathfinder')) as unknown as PathfinderModule;
+    // mineflayer-pathfinder is CommonJS, so under ESM interop its named exports
+    // may land on `.default` instead of the namespace root.
+    const mod: PathfinderModule = imported.pathfinder ? imported : imported.default ?? imported;
+    if (mod.pathfinder && typeof bot.loadPlugin === 'function') {
+      bot.loadPlugin(mod.pathfinder);
+    }
+    if (mod.Movements) pathfinderMovements = mod.Movements;
+    if (mod.goals) pathfinderGoals = mod.goals;
+  } catch {
+    // Pathfinder is optional: without it the bot still operates within its
+    // stationary reach, exactly as before. Build ops just won't walk.
+  }
+}
+
+// Movements need bot.registry, which is only populated after spawn.
+function configurePathfinderMovements(bot: BotLike): void {
+  if (!pathfinderMovements || typeof bot.pathfinder?.setMovements !== 'function') return;
+  try {
+    const movements = new pathfinderMovements(bot);
+    // Keep motion tame so we don't trip anti-cheat or wreck terrain while building.
+    movements.allowSprinting = false;
+    movements.canDig = false;
+    movements.allow1by1towers = false;
+    bot.pathfinder.setMovements(movements);
+  } catch {
+    // ignore — walking just falls back to no-op
+  }
 }
 
 function createProxyConnector(proxy: ProxyConfig, destinationHost: string, destinationPort: number): (client: ProxyClientLike) => void {
@@ -1935,7 +2209,7 @@ function collectMinecraftText(value: unknown): string {
 function cloneProfile(profile: AccountProfile): AccountProfile {
   return {
     ...profile,
-    startup: { ...profile.startup },
+    startup: { ...profile.startup, flowCommands: (profile.startup.flowCommands ?? []).map((step) => ({ ...step })) },
     routine: { ...profile.routine, chatMessages: [...profile.routine.chatMessages] },
     reconnect: { ...profile.reconnect },
     proxy: profile.proxy ? { ...profile.proxy } : normalizeProxy(),
@@ -1948,6 +2222,7 @@ function profileForPersistence(profile: AccountProfile): AccountProfile {
     ...cloneProfile(profile),
     startup: {
       ...profile.startup,
+      flowCommands: (profile.startup.flowCommands ?? []).map((step) => ({ ...step })),
       authPassword: ''
     },
     proxy: profile.proxy ? { ...profile.proxy, password: '' } : normalizeProxy(),
@@ -2032,7 +2307,10 @@ function normalizeCactusFarm(config?: Partial<CactusFarmConfig>): CactusFarmConf
       100,
       10000,
       DEFAULT_MODULES.cactusFarm.placementDelayMs
-    )
+    ),
+    build: config?.build ?? DEFAULT_MODULES.cactusFarm.build,
+    breakBlock: config?.breakBlock === 'glass_pane' ? 'glass_pane' : 'oak_fence',
+    buildCollection: config?.buildCollection ?? DEFAULT_MODULES.cactusFarm.buildCollection
   };
 }
 
@@ -2053,7 +2331,10 @@ function normalizeCropFarm(config?: Partial<CropFarmConfig>): CropFarmConfig {
     radius: clamp(Number(config?.radius), 1, 12, DEFAULT_MODULES.cropFarm.radius),
     harvestDelayMs: clamp(Number(config?.harvestDelayMs), 100, 30000, DEFAULT_MODULES.cropFarm.harvestDelayMs),
     replant: config?.replant ?? DEFAULT_MODULES.cropFarm.replant,
-    collectDrops: config?.collectDrops ?? DEFAULT_MODULES.cropFarm.collectDrops
+    collectDrops: config?.collectDrops ?? DEFAULT_MODULES.cropFarm.collectDrops,
+    build: config?.build ?? DEFAULT_MODULES.cropFarm.build,
+    autoTill: config?.autoTill ?? DEFAULT_MODULES.cropFarm.autoTill,
+    waterMode: config?.waterMode === 'existing' ? 'existing' : 'auto'
   };
 }
 
@@ -2175,7 +2456,8 @@ function normalizeStartup(startup?: Partial<StartupFlowConfig>): StartupFlowConf
     authPassword: startup?.authPassword ?? '',
     authDelayMs: Math.max(0, Number(startup?.authDelayMs) || 2500),
     transferCommand: startup?.transferCommand?.trim() || '/smp',
-    transferDelayMs: Math.max(0, Number(startup?.transferDelayMs) || 3500)
+    transferDelayMs: Math.max(0, Number(startup?.transferDelayMs) || 3500),
+    flowCommands: normalizeScriptSteps(startup?.flowCommands, [])
   };
 }
 
@@ -2218,6 +2500,7 @@ function describeStartupFlow(startup: StartupFlowConfig): string {
   const parts = [];
   if (authCommandTemplate(startup)) parts.push(startup.authMode === 'register' ? 'lobby register' : 'lobby auth');
   if (startup.transferCommand.trim()) parts.push(startup.transferCommand.trim());
+  if (startup.flowCommands.length > 0) parts.push(`${startup.flowCommands.length} flow command${startup.flowCommands.length === 1 ? '' : 's'}`);
   return parts.join(' -> ') || 'no commands';
 }
 
@@ -2312,24 +2595,71 @@ function botPosition(bot: BotLike): PositionSnapshot | null {
   };
 }
 
-function cactusPlan(origin: PositionSnapshot, config: CactusFarmConfig): OperationWorkItem[] {
-  const work: OperationWorkItem[] = [];
-  const offsets: PositionSnapshot[] = [];
-  for (let x = -config.radius; x <= config.radius; x += 2) {
-    for (let z = -config.radius; z <= config.radius; z += 2) {
-      offsets.push({ x, y: 0, z });
+/**
+ * Build plan for an auto-harvesting cactus farm. Geometry (relative to a cactus
+ * column at (cx, 0, cz), sand on the ground block at y = -1):
+ *
+ *   y+2:            [trigger]        ← snaps the cactus off when it grows into y+2
+ *   y+1: [cactus]   [post-top]
+ *   y+0: [sand  ]   [post-mid]       (post is 2 blocks away in Z, never adjacent
+ *                   [post-base]       to the cactus at its own level)
+ *
+ * Invariants that keep the farm working:
+ *  - The cactus stays 1 tall (its own level y+1 has no solid horizontal neighbour),
+ *    otherwise it would break on placement.
+ *  - The trigger sits at the GROW cell level (cactus.y + 1), horizontally adjacent,
+ *    so the next growth segment snaps off and drops.
+ *  - The support post lives in a gap column 2 away in Z, so its mid block never
+ *    touches a cactus at the cactus level.
+ *
+ * Cacti are spaced 2 in X and 4 in Z; one post row between cactus rows carries the
+ * trigger for the row in front of it. Item collection (buildCollection) is
+ * best-effort: a hopper sits in the +Z gap where the thin trigger makes drops fall.
+ */
+export function cactusFarmPlan(origin: PositionSnapshot, config: CactusFarmConfig): OperationWorkItem[] {
+  const sand: OperationWorkItem[] = [];
+  const postBase: OperationWorkItem[] = [];
+  const postMid: OperationWorkItem[] = [];
+  const postTop: OperationWorkItem[] = [];
+  const triggers: OperationWorkItem[] = [];
+  const cactus: OperationWorkItem[] = [];
+  const collection: OperationWorkItem[] = [];
+
+  const place = (bucket: OperationWorkItem[], offset: PositionSnapshot, itemName: string) => {
+    bucket.push({ action: 'place', position: addPosition(origin, offset), itemName, walk: true });
+  };
+
+  const r = config.radius;
+  for (let z = -r; z <= r; z += 4) {
+    for (let x = -r; x <= r; x += 2) {
+      place(sand, { x, y: 0, z }, 'sand');
+      place(cactus, { x, y: 1, z }, 'cactus');
+      if (!config.build) continue;
+      // support post in the gap column two blocks behind (+Z) the cactus
+      place(postBase, { x, y: 0, z: z + 2 }, config.breakBlock);
+      place(postMid, { x, y: 1, z: z + 2 }, config.breakBlock);
+      place(postTop, { x, y: 2, z: z + 2 }, config.breakBlock);
+      // trigger at the grow cell's +Z neighbour, leaning on the post top
+      place(triggers, { x, y: 2, z: z + 1 }, config.breakBlock);
+      if (config.buildCollection) {
+        // hopper in the +Z gap at ground level, where the thin trigger drops cactus
+        place(collection, { x, y: 0, z: z + 1 }, 'hopper');
+      }
     }
   }
-  for (let layer = 0; layer < config.layers; layer += 1) {
-    const baseY = layer * 3;
-    for (const offset of offsets) {
-      const sand = addPosition(origin, { x: offset.x, y: baseY, z: offset.z });
-      const cactus = addPosition(origin, { x: offset.x, y: baseY + 1, z: offset.z });
-      work.push({ action: 'place', position: sand, itemName: 'sand' });
-      work.push({ action: 'place', position: cactus, itemName: 'cactus' });
-    }
+
+  // Ordering matters: every block must have its reference placed first. Floor and
+  // post pillar go bottom-up, triggers lean on the finished post tops, cacti last.
+  return [...sand, ...postBase, ...collection, ...postMid, ...postTop, ...triggers, ...cactus];
+}
+
+function cactusMaterialNeeds(plan: OperationWorkItem[]): Record<string, number> {
+  const needs: Record<string, number> = {};
+  for (const item of plan) {
+    if (item.action !== 'place' || !item.itemName) continue;
+    needs[item.itemName] = (needs[item.itemName] ?? 0) + 1;
   }
-  return work;
+  return needs;
 }
 
 function positionsInBox(a: PositionSnapshot, b: PositionSnapshot): PositionSnapshot[] {
@@ -2402,6 +2732,16 @@ function findInventoryItem(bot: BotLike, itemName: string): InventoryItemLike | 
   return (bot.inventory?.items?.() ?? []).find((item) => itemKey(item) === itemName) ?? null;
 }
 
+function findHoe(bot: BotLike): InventoryItemLike | null {
+  return (bot.inventory?.items?.() ?? []).find((item) => itemKey(item)?.endsWith('_hoe') ?? false) ?? null;
+}
+
+const TILLABLE_BLOCKS = new Set(['dirt', 'grass_block', 'dirt_path', 'rooted_dirt']);
+
+function isTillable(block: BlockLike): boolean {
+  return TILLABLE_BLOCKS.has(block.name ?? '');
+}
+
 function isMatureCrop(block: BlockLike, crop: CropFarmConfig['crop']): boolean {
   const name = block.name ?? '';
   if (crop === 'pumpkin') return name === 'pumpkin';
@@ -2455,6 +2795,61 @@ function cropSeedName(crop: CropFarmConfig['crop']): string {
 
 function cropLabel(crop: CropFarmConfig['crop']): string {
   return crop.replaceAll('_', ' ');
+}
+
+// Only these grow on hoe-tilled, water-hydrated farmland, so only these can be
+// auto-built (till + water + plant). Pumpkin/melon use stems and nether_wart
+// needs soul sand, so the build pass is skipped for them.
+function isFarmlandCrop(crop: CropFarmConfig['crop']): boolean {
+  return crop === 'wheat' || crop === 'carrot' || crop === 'potato' || crop === 'beetroot';
+}
+
+interface CropBuildPlan {
+  /** clear-then-till steps for every non-centre cell (empty when autoTill is off). */
+  prepare: OperationWorkItem[];
+  /** seed-planting steps for every non-centre cell. */
+  plant: OperationWorkItem[];
+  /** dig the centre block down one so a water source can sit at farmland level. */
+  centerDig: OperationWorkItem;
+  /** where the water source goes (farmland level, hydrates the whole square). */
+  waterPos: PositionSnapshot;
+  /** every surface cell (farmland level) — used to detect pre-placed water. */
+  footprint: PositionSnapshot[];
+}
+
+/**
+ * Plan a hydrated crop square centred on the bot. Farmland sits at y-1 (the
+ * surface the bot walks on), crops at y0, a single water source at the centre
+ * (y-1) hydrates the surrounding cells (4-block range, so a 9x9 is fully wet).
+ */
+export function cropBuildPlan(origin: PositionSnapshot, config: CropFarmConfig): CropBuildPlan {
+  const half = config.radius >= 4 ? 4 : config.radius;
+  const seed = cropSeedName(config.crop);
+  const prepare: OperationWorkItem[] = [];
+  const plant: OperationWorkItem[] = [];
+  const footprint: PositionSnapshot[] = [];
+
+  for (let dx = -half; dx <= half; dx += 1) {
+    for (let dz = -half; dz <= half; dz += 1) {
+      const surface = addPosition(origin, { x: dx, y: -1, z: dz });
+      footprint.push(surface);
+      if (dx === 0 && dz === 0) continue; // centre is the water source
+      if (config.autoTill) {
+        // clear anything sitting on the dirt (grass, etc.) then till it
+        prepare.push({ action: 'dig', position: addPosition(origin, { x: dx, y: 0, z: dz }), walk: true });
+        prepare.push({ action: 'till', position: surface, walk: true });
+      }
+      plant.push({ action: 'place', position: addPosition(origin, { x: dx, y: 0, z: dz }), itemName: seed, walk: true });
+    }
+  }
+
+  return {
+    prepare,
+    plant,
+    centerDig: { action: 'dig', position: addPosition(origin, { x: 0, y: -1, z: 0 }), walk: true },
+    waterPos: addPosition(origin, { x: 0, y: -1, z: 0 }),
+    footprint
+  };
 }
 
 function operationEventType(kind: OperationKind): SessionEvent['type'] {

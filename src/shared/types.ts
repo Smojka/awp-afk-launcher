@@ -39,6 +39,7 @@ export interface StartupFlowConfig {
   authDelayMs: number;
   transferCommand: string;
   transferDelayMs: number;
+  flowCommands: ScriptStep[];
 }
 
 export interface AfkRoutineConfig {
@@ -76,12 +77,22 @@ export interface ProxyConfig {
 
 export type CropType = 'wheat' | 'carrot' | 'potato' | 'beetroot' | 'nether_wart' | 'pumpkin' | 'melon';
 
+export type CactusBreakBlock = 'oak_fence' | 'glass_pane';
+
 export interface CactusFarmConfig {
   enabled: boolean;
   layers: number;
   radius: number;
   placementDelayMs: number;
+  /** Build a real auto-harvesting farm (break-trigger blocks + collection) instead of bare cactus columns. */
+  build: boolean;
+  /** Thin block placed at the cactus grow cell so growth snaps off and drops. */
+  breakBlock: CactusBreakBlock;
+  /** Also place a hopper line under the drop cells to collect the harvest. */
+  buildCollection: boolean;
 }
+
+export type CropWaterMode = 'auto' | 'existing';
 
 export interface CropFarmConfig {
   enabled: boolean;
@@ -90,6 +101,12 @@ export interface CropFarmConfig {
   harvestDelayMs: number;
   replant: boolean;
   collectDrops: boolean;
+  /** Run a till + water + plant build pass before entering the harvest loop. */
+  build: boolean;
+  /** Convert plain dirt/grass into farmland with a hoe during the build pass. */
+  autoTill: boolean;
+  /** 'auto' tries to place a center water source with a bucket; 'existing' assumes water is already there. */
+  waterMode: CropWaterMode;
 }
 
 export interface AreaOperationConfig {

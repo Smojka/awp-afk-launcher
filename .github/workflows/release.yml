@@ -34,6 +34,7 @@ jobs:
           - ChunkKeeper native Windows x64 NSIS installer
           - ChunkKeeper Web macOS ARM64 DMG
           - ChunkKeeper Web Windows x64 portable EXE
+          - ChunkKeeper macOS first-run helper ZIP
 
           Validation performed in CI:
           - TypeScript typecheck
@@ -41,8 +42,10 @@ jobs:
           - Production dependency audit
           - Native macOS and Windows packaging
           - Web-dashboard macOS and Windows portable packaging
+          - macOS app signature and DMG verification
 
           ChunkKeeper is the native desktop app. ChunkKeeper Web starts the localhost browser dashboard without a Windows setup installer.
+          On macOS, use the first-run helper if Apple shows "Apple could not verify".
           NOTES
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
@@ -77,8 +80,31 @@ jobs:
       - name: Build native DMG
         run: npm run package:mac
 
+      - name: Verify native macOS app signature
+        run: codesign --verify --deep --strict --verbose=2 release/mac-arm64/ChunkKeeper.app
+
       - name: Build web dashboard DMG
         run: npm run package:web:mac
+
+      - name: Verify web dashboard macOS app signature
+        run: codesign --verify --deep --strict --verbose=2 "release/mac-arm64/ChunkKeeper Web.app"
+
+      - name: Create macOS first-run helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp scripts/macos-first-run.command release/ChunkKeeper-macOS-First-Run.command
+          chmod +x release/ChunkKeeper-macOS-First-Run.command
+          (cd release && ditto -c -k --keepParent ChunkKeeper-macOS-First-Run.command ChunkKeeper-macOS-First-Run.zip)
+
+      - name: Verify macOS DMGs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for dmg_path in release/*.dmg; do
+            hdiutil verify "$dmg_path"
+          done
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -87,13 +113,14 @@ jobs:
           path: |
             release/*.dmg
             release/*.dmg.blockmap
+            release/ChunkKeeper-macOS-First-Run.zip
           if-no-files-found: error
 
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
-        run: gh release upload "$TAG_NAME" release/*.dmg release/*.dmg.blockmap --clobber
+        run: gh release upload "$TAG_NAME" release/*.dmg release/*.dmg.blockmap release/ChunkKeeper-macOS-First-Run.zip --clobber
 
   windows:
     name: Windows EXE
