@@ -53,10 +53,12 @@
   /* Layout */
   --header-h: 60px;
   --statusbar-h: 30px;
-  --sidebar-w: 248px;
-  --rail-w: 308px;
-  --gap: 10px;
-  --pad: 14px;
+  /* Chrome scales fluidly with the viewport, clamped so it stays usable on
+     small screens and gains presence on large ones. Type stays a fixed scale. */
+  --sidebar-w: clamp(232px, 17.2vw, 320px);
+  --rail-w: clamp(288px, 21.4vw, 420px);
+  --gap: clamp(10px, 0.7vw, 16px);
+  --pad: clamp(14px, 1vw, 20px);
   --row-h: 34px;
 
   --radius: 8px;
@@ -92,7 +94,7 @@ body,
 
 body {
   min-width: 0;
-  min-height: 600px;
+  min-height: 0;
   overflow: hidden;
   color: var(--text);
   font-family: var(--sans);
@@ -629,21 +631,82 @@ textarea {
 /* ---------- Layout ---------- */
 .layout {
   display: grid;
-  grid-template-columns: var(--sidebar-w) minmax(0, 1fr) var(--rail-w);
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   gap: var(--gap);
   min-width: 0;
   min-height: 0;
   padding: var(--gap);
   overflow: hidden;
 }
-.content,
-.rail {
+.content {
   display: flex;
   flex-direction: column;
   gap: var(--gap);
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* ---------- Tabs ---------- */
+.tabnav {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--canvas-deep);
+  overflow-x: auto;
+}
+.tabnav__tab {
+  display: inline-flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: max-content;
+  padding: 9px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color var(--t), background var(--t), border-color var(--t);
+}
+.tabnav__tab svg {
+  opacity: 0.85;
+}
+.tabnav__tab:hover {
+  color: var(--text-soft);
+  background: rgba(255, 255, 255, 0.03);
+}
+.tabnav__tab.is-active {
+  border-color: rgba(139, 92, 246, 0.42);
+  background: var(--accent-subtle);
+  color: var(--accent-strong);
+  box-shadow: var(--accent-shadow);
+}
+.tabpane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+  min-height: 0;
+}
+.tabpane[hidden] {
+  display: none;
+}
+.overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.6fr);
+  gap: var(--gap);
+  align-items: start;
 }
 
 /* ---------- Panel (liquid-panel) ---------- */
@@ -965,7 +1028,7 @@ textarea {
   font-size: 22px;
   font-weight: 600;
   line-height: 1;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 .kpi__value small {
   color: var(--muted-dim);
@@ -981,9 +1044,11 @@ textarea {
 }
 .bar__fill {
   display: block;
+  width: 100%;
   height: 100%;
   border-radius: var(--r-pill);
-  transition: width 0.4s ease;
+  transform-origin: left center;
+  transition: transform 0.4s ease;
 }
 .bar__fill--ok {
   background: var(--success);
@@ -1471,6 +1536,265 @@ textarea {
   grid-template-rows: 42px minmax(0, 1fr);
 }
 
+/* ---------- Feature modules ---------- */
+.operations,
+.inventory-panel {
+  min-height: 0;
+}
+
+.operations__body {
+  display: grid;
+  gap: 12px;
+}
+
+.operation-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.operation-chip {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(2, 4, 10, 0.36);
+}
+
+.operation-chip span {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.operation-chip__state {
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.operation-chip__state--running,
+.operation-chip__state--complete {
+  color: var(--success);
+}
+
+.operation-chip__state--blocked,
+.operation-chip__state--error {
+  color: var(--danger);
+}
+
+.operations__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.module-card {
+  display: grid;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.035), transparent 80%), rgba(4, 6, 14, 0.44);
+}
+
+.module-card--wide {
+  grid-column: 1 / -1;
+}
+
+.module-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.module-card__actions,
+.operation-buttons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.module-card__body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px;
+}
+
+.module-card__body--coords {
+  grid-template-columns: 0.85fr 1.3fr 1.3fr 1fr 0.75fr;
+}
+
+.module-card__body--script {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.module-card__body--script > .toggle-wrap,
+.module-card__body--script > .quick-buttons,
+.module-card__body--script > .completion-row,
+.module-card__body--script > .completion-list,
+.module-card__body--script > .discord-box {
+  grid-column: 1 / -1;
+}
+
+.toggles--inline {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-column: 1 / -1;
+}
+
+.quick-buttons,
+.completion-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.completion-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.discord-box {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px dashed rgba(139, 92, 246, 0.28);
+  border-radius: var(--radius);
+  background: rgba(139, 92, 246, 0.055);
+}
+
+.discord-box__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.form--discord {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.position-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.position-fields legend {
+  grid-column: 1 / -1;
+  padding: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.position-fields input {
+  width: 100%;
+  min-height: 36px;
+  padding: 0.5rem 0.5rem;
+  border: 1px solid rgb(39 39 42 / 0.95);
+  border-radius: 0.625rem;
+  background: rgb(9 9 11 / 0.9);
+  color: rgb(244 244 245);
+  outline: none;
+}
+
+.inventory-panel {
+  display: grid;
+  grid-template-rows: 42px minmax(0, 1fr);
+}
+
+.inventory-panel__body {
+  display: grid;
+  gap: 10px;
+}
+
+.held-item,
+.inventory-section {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(2, 4, 10, 0.34);
+}
+
+.held-item strong {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inventory-section__items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.inventory-empty {
+  color: var(--muted-dim);
+  font-size: 12px;
+}
+
+.inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.slot {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: var(--radius-sm);
+  background: #080a10;
+  color: var(--text-soft);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.slot span {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0 3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slot strong {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  color: var(--warning);
+  font-size: 9px;
+}
+
 /* ---------- Routine ---------- */
 .routine__body {
   display: grid;
@@ -1482,7 +1806,12 @@ textarea {
   gap: 8px;
 }
 .routine__body > .toggles {
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.routine__sliders {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 18px;
 }
 
 /* ---------- Key / value (Connection) ---------- */
@@ -1765,108 +2094,307 @@ textarea {
   padding: 10px var(--pad);
 }
 
-@media (max-width: 1240px) {
-  .profile-summary__body {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+/* =========================================================================
+   Responsive — one descending cascade (large → small).
+   Layout chrome (sidebar/rail/gap/pad) scales fluidly via clamp() in :root;
+   the tiers below handle structural reflow at content-driven breakpoints.
+   ========================================================================= */
 
-  .form--profile,
-  .form--compact {
-    grid-template-columns: repeat(2, minmax(220px, 1fr));
+/* ---------- Large displays: cap & center so the desk never over-stretches ---------- */
+.app {
+  max-width: 2200px;
+  margin-inline: auto;
+}
+
+@media (min-width: 1920px) {
+  :root {
+    --row-h: 36px;
+  }
+  .kpi__value {
+    font-size: 24px;
+  }
+  .dtable table {
+    font-size: 12px;
   }
 }
 
-/* ---------- Responsive ---------- */
+/* ---------- ≤1240: thin out the dense grids ---------- */
 @media (max-width: 1240px) {
-  .layout {
-    grid-template-columns: 224px minmax(0, 1fr) 288px;
-  }
   .kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .joinflow__grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .routine__body > .toggles {
-    grid-template-columns: 1fr;
+  .profile-summary__body,
+  .module-card__body--coords,
+  .form--discord {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .form--profile,
+  .form--compact {
+    grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+  .operation-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
+/* ---------- ≤1180: stack the dual data tables ---------- */
 @media (max-width: 1180px) {
-  .tables {
+  .tables,
+  .operations__grid {
     grid-template-columns: 1fr;
   }
 }
 
+/* ---------- ≤1080: break the 3-column shell into a scrolling stack ---------- */
 @media (max-width: 1080px) {
   .layout {
     display: block;
+    max-width: none;
     overflow-y: auto;
   }
-
-  .content,
-  .rail {
+  .content {
     overflow: visible;
   }
-
   .layout > * + * {
     margin-top: var(--gap);
   }
-
   .sidebar {
     min-height: 260px;
   }
-
-  .rail {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .overview-grid {
+    grid-template-columns: 1fr;
   }
-
   .tables {
     min-height: 320px;
   }
 }
 
+/* ---------- ≤940: single-column rail, condense the top bar ---------- */
 @media (max-width: 940px) {
   .topbar {
     gap: 10px;
     padding-inline: 12px;
   }
-
   .brand__sub {
     display: none;
   }
-
   .topbar__pulse {
     padding-inline: 10px;
   }
-
   .sidebar {
     min-height: 210px;
   }
-
-  .rail {
-    grid-template-columns: 1fr;
-  }
-
-  .tables {
-    grid-template-columns: 1fr;
-  }
-
   .form--inline,
   .form--profile,
   .form--compact,
-  .profile-summary__body {
+  .profile-summary__body,
+  .module-card__body,
+  .module-card__body--coords,
+  .module-card__body--script,
+  .form--discord {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
   .modal--wide .form--inline,
   .modal--wide .toggles {
     grid-template-columns: 1fr;
   }
-
   .statusbar__label {
     display: none;
+  }
+}
+
+/* ---------- ≤860: top-bar actions become icon-only ---------- */
+@media (max-width: 860px) {
+  .topbar {
+    gap: 8px;
+    padding-inline: 10px;
+  }
+  .topbar__pulse span:last-child {
+    display: none;
+  }
+  .topbar__actions {
+    gap: 6px;
+  }
+  .topbar__actions .btn {
+    width: 36px;
+    padding-inline: 0;
+    gap: 0;
+    font-size: 0;
+  }
+  .topbar__actions .btn svg {
+    width: 16px;
+    height: 16px;
+  }
+  .topbar__divider {
+    margin-inline: 0;
+  }
+  .statusbar__item,
+  .statusbar__credit {
+    padding-inline: 10px;
+  }
+  .modal-scrim {
+    padding: 16px;
+  }
+}
+
+/* ---------- ≤780: shrink brand, collapse profile/forms to one column ---------- */
+@media (max-width: 780px) {
+  .brand__mark {
+    width: 30px;
+    height: 30px;
+  }
+  .brand__name {
+    font-size: 14px;
+  }
+  .topbar__pulse {
+    padding-inline: 8px;
+  }
+  .profile-summary__body,
+  .form--inline,
+  .form--profile,
+  .form--compact,
+  .profile-editor .joinflow__grid {
+    grid-template-columns: 1fr;
+  }
+  .profile-editor .joinflow__grid .field {
+    grid-column: auto;
+  }
+}
+
+/* ---------- ≤760: full single-column; dense clusters wrap instead of clipping ---------- */
+@media (max-width: 760px) {
+  body {
+    overflow: auto;
+  }
+  .app {
+    min-height: 100%;
+    height: auto;
+    max-width: none;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+  .topbar {
+    flex-wrap: wrap;
+    min-height: var(--header-h);
+    height: auto;
+    padding-block: 10px;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+    padding-top: max(10px, env(safe-area-inset-top));
+  }
+  .topbar__pulse {
+    margin-left: auto;
+  }
+  .topbar__pulse span:last-child {
+    display: none;
+  }
+  .topbar__actions {
+    order: 3;
+    width: 100%;
+    margin-left: 0;
+    flex-wrap: wrap;
+  }
+  /* Wrap heads so titles never truncate behind their action buttons */
+  .panel__head,
+  .module-card__head {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 42px;
+  }
+  .panel__title {
+    overflow: visible;
+    white-space: normal;
+  }
+  .toolbar {
+    flex-wrap: wrap;
+  }
+  .toolbar__actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .coords {
+    flex-wrap: wrap;
+  }
+  .coords__cell {
+    flex: 1 0 30%;
+    border-bottom: 1px solid var(--border);
+  }
+  .form--inline,
+  .form--profile,
+  .form--compact,
+  .profile-summary__body,
+  .operation-strip,
+  .module-card__body,
+  .module-card__body--coords,
+  .module-card__body--script,
+  .form--discord,
+  .toggles--inline,
+  .completion-row,
+  .joinflow__grid {
+    grid-template-columns: 1fr;
+  }
+  .statusbar {
+    overflow-x: auto;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .modal__foot {
+    flex-wrap: wrap;
+  }
+  .modal__foot-spacer {
+    display: none;
+  }
+}
+
+/* ---------- ≤480: tiny phones ---------- */
+@media (max-width: 480px) {
+  .topbar__pulse span {
+    display: none;
+  }
+  .coords__cell {
+    flex-basis: 45%;
+  }
+  .toolbar__actions .btn {
+    flex: 1 1 auto;
+  }
+  .inventory-grid {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .routine__sliders {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- Touch input on small screens: 44px hit targets ---------- */
+@media (pointer: coarse) and (max-width: 940px) {
+  .btn,
+  .icon-btn,
+  .field input,
+  .field select,
+  .field textarea,
+  .chat__input input,
+  .position-fields input {
+    min-height: 44px;
+  }
+  .btn--sm {
+    min-height: 40px;
+  }
+  .toggle {
+    min-height: 44px;
+  }
+  .help-tip {
+    width: 24px;
+    height: 24px;
+  }
+  .row {
+    padding: 12px 9px;
+  }
+  .slider input[type="range"] {
+    height: 6px;
+  }
+  .slider input[type="range"]::-webkit-slider-thumb {
+    width: 18px;
+    height: 18px;
   }
 }

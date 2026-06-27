@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { AccountProfile, AppSettings } from '../../shared/types.js';
+import type { AccountProfile, AppSettings, BotModulesConfig } from '../../shared/types.js';
 
 export interface ProfileDocument {
   selectedProfileId: string | null;
@@ -56,6 +56,29 @@ function stripProfileSecrets(profile: AccountProfile): AccountProfile {
       ...profile.routine,
       chatMessages: [...profile.routine.chatMessages]
     },
-    reconnect: { ...profile.reconnect }
+    reconnect: { ...profile.reconnect },
+    proxy: profile.proxy ? { ...profile.proxy, password: '' } : profile.proxy,
+    modules: profile.modules ? stripModuleSecrets(profile.modules) : profile.modules
+  };
+}
+
+function stripModuleSecrets(modules: BotModulesConfig): BotModulesConfig {
+  return {
+    ...modules,
+    area: {
+      ...modules.area,
+      from: { ...modules.area.from },
+      to: { ...modules.area.to }
+    },
+    script: {
+      ...modules.script,
+      steps: modules.script.steps.map((step) => ({ ...step })),
+      quickCommands: modules.script.quickCommands.map((step) => ({ ...step }))
+    },
+    discord: { ...modules.discord },
+    autoResponse: {
+      ...modules.autoResponse,
+      rules: modules.autoResponse.rules.map((rule) => ({ ...rule }))
+    }
   };
 }

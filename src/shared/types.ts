@@ -12,7 +12,23 @@ export type BotConnectionState =
   | 'stopping'
   | 'error';
 
-export type AfkActionType = 'look' | 'jump' | 'sneak' | 'swing' | 'chat' | 'eat' | 'respawn' | 'reconnect';
+export type AfkActionType =
+  | 'look'
+  | 'jump'
+  | 'sneak'
+  | 'swing'
+  | 'chat'
+  | 'eat'
+  | 'respawn'
+  | 'reconnect'
+  | 'inventory'
+  | 'script'
+  | 'discord'
+  | 'autoReply'
+  | 'cactus'
+  | 'farm'
+  | 'area'
+  | 'generator';
 
 export interface StartupFlowConfig {
   enabled: boolean;
@@ -47,6 +63,100 @@ export interface ReconnectPolicy {
   maxDelayMs: number;
 }
 
+export type ProxyType = 'socks4' | 'socks5' | 'http' | 'https';
+
+export interface ProxyConfig {
+  enabled: boolean;
+  type: ProxyType;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+}
+
+export type CropType = 'wheat' | 'carrot' | 'potato' | 'beetroot' | 'nether_wart' | 'pumpkin' | 'melon';
+
+export interface CactusFarmConfig {
+  enabled: boolean;
+  layers: number;
+  radius: number;
+  placementDelayMs: number;
+}
+
+export interface CropFarmConfig {
+  enabled: boolean;
+  crop: CropType;
+  radius: number;
+  harvestDelayMs: number;
+  replant: boolean;
+  collectDrops: boolean;
+}
+
+export interface AreaOperationConfig {
+  enabled: boolean;
+  mode: 'mine' | 'fill';
+  from: PositionSnapshot;
+  to: PositionSnapshot;
+  fillBlock: string;
+  actionDelayMs: number;
+}
+
+export interface GeneratorMineConfig {
+  enabled: boolean;
+  mode: 'forward' | 'four_way';
+  direction: 'north' | 'south' | 'east' | 'west';
+  depth: number;
+  actionDelayMs: number;
+}
+
+export interface ScriptStep {
+  id: string;
+  label: string;
+  command: string;
+  delayMs: number;
+}
+
+export interface ScriptConfig {
+  enabled: boolean;
+  loop: boolean;
+  steps: ScriptStep[];
+  quickCommands: ScriptStep[];
+}
+
+export interface DiscordConfig {
+  enabled: boolean;
+  commandPrefix: string;
+  notifyChat: boolean;
+  notifyEvents: boolean;
+  pollCommands: boolean;
+  pollIntervalMs: number;
+  channelId: string;
+}
+
+export interface AutoResponseRule {
+  id: string;
+  enabled: boolean;
+  label: string;
+  match: string;
+  response: string;
+  cooldownMs: number;
+}
+
+export interface AutoResponseConfig {
+  enabled: boolean;
+  rules: AutoResponseRule[];
+}
+
+export interface BotModulesConfig {
+  cactusFarm: CactusFarmConfig;
+  cropFarm: CropFarmConfig;
+  area: AreaOperationConfig;
+  generator: GeneratorMineConfig;
+  script: ScriptConfig;
+  discord: DiscordConfig;
+  autoResponse: AutoResponseConfig;
+}
+
 export interface AccountProfile {
   id: string;
   label: string;
@@ -59,6 +169,8 @@ export interface AccountProfile {
   startup: StartupFlowConfig;
   routine: AfkRoutineConfig;
   reconnect: ReconnectPolicy;
+  proxy?: ProxyConfig;
+  modules?: BotModulesConfig;
 }
 
 export interface PositionSnapshot {
@@ -86,6 +198,39 @@ export interface ChatLine {
   message: string;
 }
 
+export interface InventoryItemSnapshot {
+  slot: number;
+  name: string;
+  displayName: string;
+  count: number;
+}
+
+export interface LiveInventorySnapshot {
+  updatedAt: string | null;
+  heldItem: InventoryItemSnapshot | null;
+  armor: InventoryItemSnapshot[];
+  crafting: InventoryItemSnapshot[];
+  storage: InventoryItemSnapshot[];
+  slots: InventoryItemSnapshot[];
+  openWindowTitle: string | null;
+}
+
+export type OperationKind = 'cactusFarm' | 'cropFarm' | 'area' | 'generator' | 'script' | 'discord';
+
+export type OperationState = 'idle' | 'running' | 'blocked' | 'complete' | 'error';
+
+export interface OperationSnapshot {
+  kind: OperationKind;
+  state: OperationState;
+  label: string;
+  detail: string | null;
+  startedAt: string | null;
+  updatedAt: string | null;
+  completed: number;
+  total: number | null;
+  stats: Record<string, number>;
+}
+
 export interface BotSessionSnapshot {
   profileId: string;
   state: BotConnectionState;
@@ -97,9 +242,12 @@ export interface BotSessionSnapshot {
   dimension: string | null;
   inventoryUsed: number | null;
   inventorySize: number | null;
+  inventory: LiveInventorySnapshot;
   playersOnline: number | null;
   startupActive: boolean;
   routineActive: boolean;
+  operations: Record<OperationKind, OperationSnapshot>;
+  tabCompletions: string[];
   connectedAt: string | null;
   nextReconnectAt: string | null;
   lastError: string | null;
@@ -160,6 +308,18 @@ export interface SaveProfileInput extends Omit<AccountProfile, 'id'> {
   id?: string;
 }
 
+export interface OperationStartRequest {
+  kind: OperationKind;
+  config?: Partial<CactusFarmConfig | CropFarmConfig | AreaOperationConfig | GeneratorMineConfig | ScriptConfig | DiscordConfig>;
+}
+
+export interface DiscordRuntimeInput {
+  enabled: boolean;
+  webhookUrl?: string;
+  botToken?: string;
+  channelId?: string;
+}
+
 export interface LauncherApi {
   platform: string;
   getState: () => Promise<LauncherState>;
@@ -171,6 +331,11 @@ export interface LauncherApi {
   startAll: () => Promise<LauncherState>;
   stopAll: () => Promise<LauncherState>;
   sendChat: (profileId: string, message: string) => Promise<LauncherState>;
+  startOperation: (profileId: string, request: OperationStartRequest) => Promise<LauncherState>;
+  stopOperation: (profileId: string, kind: OperationKind) => Promise<LauncherState>;
+  runQuickScript: (profileId: string, command: string) => Promise<LauncherState>;
+  completeChat: (profileId: string, partial: string) => Promise<string[]>;
+  configureDiscord: (profileId: string, input: DiscordRuntimeInput) => Promise<LauncherState>;
   updateSettings: (patch: Partial<AppSettings>) => Promise<LauncherState>;
   openUserData: () => Promise<void>;
   minimizeWindow: () => Promise<void>;

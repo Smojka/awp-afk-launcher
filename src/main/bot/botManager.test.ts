@@ -23,6 +23,7 @@ class MemoryStore {
 
 class FakeBot extends EventEmitter {
   _client = new EventEmitter();
+  username?: string;
   registry = {
     foods: {
       815: { id: 815, name: 'bread', displayName: 'Bread', foodPoints: 5, saturation: 6, effectiveQuality: 11 },
@@ -52,6 +53,16 @@ class FakeBot extends EventEmitter {
   consume = vi.fn(async () => {
     this.food = 20;
   });
+  blockAt = vi.fn((position: { x: number; y: number; z: number }) => ({
+    name: 'stone',
+    displayName: 'Stone',
+    position,
+    boundingBox: 'block',
+    metadata: 0
+  }));
+  dig = vi.fn(async () => undefined);
+  placeBlock = vi.fn(async () => undefined);
+  tabComplete = vi.fn(async (partial: string) => [`${partial}pawn`, '/home']);
   acceptResourcePack = vi.fn();
 }
 
@@ -543,5 +554,150 @@ describe('BotManager', () => {
 
     expect(fakeBot.chat).toHaveBeenCalledWith(`/login ${testAuthPassword}`);
     expect(manager.getState().sessions[profile.id].events.some((event) => event.detail?.includes(testAuthPassword))).toBe(false);
+  });
+
+  it('blocks cactus farm construction until required materials are present', async () => {
+    const fakeBot = new FakeBot();
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+    const state = await manager.startOperation(profile.id, {
+      kind: 'cactusFarm',
+      config: { layers: 1, radius: 1, placementDelayMs: 100 }
+    });
+
+    expect(state.sessions[profile.id].operations.cactusFarm.state).toBe('blocked');
+    expect(state.sessions[profile.id].operations.cactusFarm.detail).toContain('Missing materials');
+    expect(fakeBot.placeBlock).not.toHaveBeenCalled();
+  });
+
+  it('builds the cactus farm work queue with configured layers and placement delay', async () => {
+    vi.useFakeTimers();
+    const fakeBot = new FakeBot();
+    fakeBot.inventory.items = () => [
+      { name: 'sand', displayName: 'Sand', count: 16 },
+      { name: 'cactus', displayName: 'Cactus', count: 16 }
+    ];
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+    await manager.startOperation(profile.id, {
+      kind: 'cactusFarm',
+      config: { layers: 1, radius: 1, placementDelayMs: 100 }
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+
+    const state = manager.getState();
+    expect(fakeBot.equip).toHaveBeenCalledWith(expect.objectContaining({ name: 'sand' }), 'hand');
+    expect(fakeBot.equip).toHaveBeenCalledWith(expect.objectContaining({ name: 'cactus' }), 'hand');
+    expect(fakeBot.placeBlock).toHaveBeenCalledTimes(8);
+    expect(state.sessions[profile.id].operations.cactusFarm.state).toBe('complete');
+    expect(state.sessions[profile.id].operations.cactusFarm.completed).toBe(8);
+  });
+
+  it('runs quick scripts and exposes tab-completion suggestions from the bot', async () => {
+    const fakeBot = new FakeBot();
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+    await manager.runQuickScript(profile.id, '/spawn');
+    const completions = await manager.completeChat(profile.id, '/s');
+
+    expect(fakeBot.chat).toHaveBeenCalledWith('/spawn');
+    expect(completions).toEqual(['/spawn', '/home']);
+    expect(manager.getState().sessions[profile.id].tabCompletions).toEqual(['/spawn', '/home']);
+  });
+
+  it('auto-responds to matching server chat with per-rule cooldowns', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-25T10:00:00Z'));
+    const fakeBot = new FakeBot();
+    fakeBot.username = testUsername;
+    const autoResponseProfile: AccountProfile = {
+      ...profile,
+      modules: {
+        cactusFarm: { enabled: false, layers: 1, radius: 1, placementDelayMs: 100 },
+        cropFarm: { enabled: false, crop: 'wheat', radius: 2, harvestDelayMs: 100, replant: true, collectDrops: true },
+        area: {
+          enabled: false,
+          mode: 'mine',
+          from: { x: 0, y: 0, z: 0 },
+          to: { x: 1, y: 1, z: 1 },
+          fillBlock: 'stone',
+          actionDelayMs: 100
+        },
+        generator: { enabled: false, mode: 'forward', direction: 'north', depth: 2, actionDelayMs: 100 },
+        script: { enabled: false, loop: true, steps: [], quickCommands: [] },
+        discord: {
+          enabled: false,
+          commandPrefix: '!ck ',
+          notifyChat: true,
+          notifyEvents: true,
+          pollCommands: false,
+          pollIntervalMs: 10000,
+          channelId: ''
+        },
+        autoResponse: {
+          enabled: true,
+          rules: [
+            {
+              id: 'accept-tpa',
+              enabled: true,
+              label: 'TPA accept',
+              match: 'tpa',
+              response: '/tpaccept',
+              cooldownMs: 5000
+            }
+          ]
+        }
+      }
+    };
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([autoResponseProfile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+    fakeBot.emit('chat', 'Friend', 'please tpa accept');
+
+    expect(fakeBot.chat).toHaveBeenCalledWith('/tpaccept');
+    let state = manager.getState();
+    expect(state.sessions[profile.id].chat.some((line) => line.source === 'bot' && line.message === '/tpaccept')).toBe(true);
+    expect(state.sessions[profile.id].events.some((event) => event.type === 'autoReply' && event.label === 'Auto response sent')).toBe(true);
+
+    fakeBot.emit('chat', 'Friend', 'tpa again');
+    expect(fakeBot.chat).toHaveBeenCalledTimes(1);
+    state = manager.getState();
+    expect(state.sessions[profile.id].events.some((event) => event.type === 'autoReply' && event.label === 'Auto response cooled down')).toBe(true);
+
+    vi.setSystemTime(new Date('2026-06-25T10:00:06Z'));
+    fakeBot.emit('chat', testUsername, 'tpa self message');
+    fakeBot.emit('chat', 'Friend', 'tpa after cooldown');
+    expect(fakeBot.chat).toHaveBeenCalledTimes(2);
   });
 });

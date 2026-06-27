@@ -1,4 +1,12 @@
-import { DEFAULT_SETTINGS, type AccountProfile, type BotSessionSnapshot, type LauncherState } from '../shared/types';
+import {
+  DEFAULT_SETTINGS,
+  type AccountProfile,
+  type BotSessionSnapshot,
+  type InventoryItemSnapshot,
+  type LauncherState,
+  type OperationKind,
+  type OperationSnapshot
+} from '../shared/types';
 import { DEFAULT_HEARTBEAT_MESSAGES } from '../shared/heartbeatMessages';
 
 export const demoProfiles: AccountProfile[] = [
@@ -97,9 +105,27 @@ export function createDemoState(): LauncherState {
       dimension: 'overworld',
       inventoryUsed: 24,
       inventorySize: 46,
+      inventory: inventory([
+        item(36, 'cactus', 'Cactus', 32),
+        item(37, 'sand', 'Sand', 48),
+        item(38, 'wheat_seeds', 'Wheat Seeds', 18),
+        item(39, 'cooked_beef', 'Steak', 8)
+      ]),
       playersOnline: 38,
       startupActive: false,
       routineActive: true,
+      operations: operations({
+        cropFarm: {
+          state: 'running',
+          detail: 'wheat farm loop active',
+          startedAt: new Date(Date.now() - 1000 * 90).toISOString(),
+          updatedAt: new Date().toISOString(),
+          completed: 12,
+          total: null,
+          stats: { harvested: 12, replanted: 12, collected: 12 }
+        }
+      }),
+      tabCompletions: ['/spawn', '/home', '/sell'],
       connectedAt: new Date(Date.now() - 1000 * 60 * 28).toISOString(),
       nextReconnectAt: null,
       lastError: null,
@@ -127,9 +153,12 @@ export function createDemoState(): LauncherState {
       dimension: null,
       inventoryUsed: null,
       inventorySize: 46,
+      inventory: inventory([]),
       playersOnline: null,
       startupActive: false,
       routineActive: false,
+      operations: operations(),
+      tabCompletions: [],
       connectedAt: null,
       nextReconnectAt: null,
       lastError: null,
@@ -181,5 +210,57 @@ function line(id: string, source: BotSessionSnapshot['chat'][number]['source'], 
     source,
     message,
     at: new Date().toISOString()
+  };
+}
+
+function item(slot: number, name: string, displayName: string, count: number): InventoryItemSnapshot {
+  return { slot, name, displayName, count };
+}
+
+function inventory(items: InventoryItemSnapshot[]): BotSessionSnapshot['inventory'] {
+  return {
+    updatedAt: new Date().toISOString(),
+    heldItem: items[0] ?? null,
+    armor: [],
+    crafting: [],
+    storage: items,
+    slots: items,
+    openWindowTitle: null
+  };
+}
+
+function operations(
+  overrides: Partial<Record<OperationKind, Partial<OperationSnapshot>>> = {}
+): Record<OperationKind, OperationSnapshot> {
+  return {
+    cactusFarm: operation('cactusFarm', overrides.cactusFarm),
+    cropFarm: operation('cropFarm', overrides.cropFarm),
+    area: operation('area', overrides.area),
+    generator: operation('generator', overrides.generator),
+    script: operation('script', overrides.script),
+    discord: operation('discord', overrides.discord)
+  };
+}
+
+function operation(kind: OperationKind, override: Partial<OperationSnapshot> = {}): OperationSnapshot {
+  const labels: Record<OperationKind, string> = {
+    cactusFarm: 'Cactus farm',
+    cropFarm: 'Crop farm',
+    area: 'Area operation',
+    generator: 'Generator mine',
+    script: 'Script loop',
+    discord: 'Discord bridge'
+  };
+  return {
+    kind,
+    state: 'idle',
+    label: labels[kind],
+    detail: null,
+    startedAt: null,
+    updatedAt: null,
+    completed: 0,
+    total: null,
+    stats: {},
+    ...override
   };
 }

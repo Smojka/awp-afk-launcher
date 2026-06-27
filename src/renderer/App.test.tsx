@@ -114,6 +114,59 @@ function createTestApi(): LauncherApi {
       }
       return publish();
     },
+    startOperation: async (profileId, request) => {
+      const session = state.sessions[profileId];
+      if (session) {
+        session.operations[request.kind] = {
+          ...session.operations[request.kind],
+          state: 'running',
+          detail: 'Test operation running',
+          startedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+      }
+      return publish();
+    },
+    stopOperation: async (profileId, kind) => {
+      const session = state.sessions[profileId];
+      if (session) {
+        session.operations[kind] = {
+          ...session.operations[kind],
+          state: 'idle',
+          detail: 'Stopped',
+          updatedAt: new Date().toISOString()
+        };
+      }
+      return publish();
+    },
+    runQuickScript: async (profileId, command) => {
+      const session = state.sessions[profileId];
+      if (session) {
+        session.chat = [
+          ...session.chat,
+          { id: `quick-${Date.now()}`, at: new Date().toISOString(), source: 'bot', message: command }
+        ];
+      }
+      return publish();
+    },
+    completeChat: async (profileId, partial) => {
+      const session = state.sessions[profileId];
+      const completions = ['/spawn', '/home', `${partial}test`].filter(Boolean);
+      if (session) session.tabCompletions = completions;
+      return completions;
+    },
+    configureDiscord: async (profileId, input) => {
+      const session = state.sessions[profileId];
+      if (session) {
+        session.operations.discord = {
+          ...session.operations.discord,
+          state: input.enabled ? 'running' : 'idle',
+          detail: input.enabled ? 'Discord bridge configured for this runtime session' : 'Discord bridge disabled',
+          updatedAt: new Date().toISOString()
+        };
+      }
+      return publish();
+    },
     updateSettings: async (patch) => {
       state = { ...state, settings: { ...state.settings, ...patch } };
       return publish();
@@ -133,6 +186,7 @@ function createTestApi(): LauncherApi {
 
 function buttonsWithoutAdjacentHelp(root: ParentNode) {
   return Array.from(root.querySelectorAll('button')).filter((button) => {
+    if (button.getAttribute('role') === 'tab') return false;
     const parent = button.parentElement;
     return !parent || !Array.from(parent.children).some((child) => child.classList.contains('help-tip'));
   });
@@ -152,6 +206,8 @@ describe('ChunkKeeper UI', () => {
     expect(screen.getByText('Auto-eat')).toBeInTheDocument();
     expect(screen.getByText('Eat below')).toBeInTheDocument();
     expect(screen.getByText('Pause below')).toBeInTheDocument();
+    expect(screen.getByText('Auto response')).toBeInTheDocument();
+    expect(screen.getByText('Match replies')).toBeInTheDocument();
     expect(screen.getByText('Pulse rail')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^connect$/i })).toBeInTheDocument();
     expect(screen.getByLabelText('Window controls')).toBeInTheDocument();
@@ -168,6 +224,14 @@ describe('ChunkKeeper UI', () => {
     expect(within(dialog).getByText('Login command')).toBeInTheDocument();
     expect(within(dialog).getByText('Register command')).toBeInTheDocument();
     expect(within(dialog).getByText('Reconnect policy')).toBeInTheDocument();
+  });
+
+  it('shows live connection state in the account sidebar instead of auth mode', async () => {
+    render(<App api={createTestApi()} />);
+
+    const onlineRow = await screen.findByRole('button', { name: /ARKONAS_SMP/i });
+    expect(within(onlineRow).getByText('Online · play.arkonas.net')).toBeInTheDocument();
+    expect(within(onlineRow).queryByText('offline · play.arkonas.net')).not.toBeInTheDocument();
   });
 
   it('does not silently fall back to simulated data when the desktop bridge and local web API are missing', async () => {
@@ -187,7 +251,7 @@ describe('ChunkKeeper UI', () => {
 
     expect(buttonsWithoutAdjacentHelp(container)).toEqual([]);
     const sliders = Array.from(container.querySelectorAll('.slider'));
-    expect(sliders).toHaveLength(4);
+    expect(sliders.length).toBeGreaterThanOrEqual(8);
     expect(sliders.every((slider) => slider.querySelector('.help-tip'))).toBe(true);
     const connectHelp = screen.getByLabelText(/Seçili hesabı bağlar/i);
     expect(connectHelp).toBeInTheDocument();
@@ -268,5 +332,34 @@ describe('ChunkKeeper UI', () => {
     await user.click(screen.getByTitle('Settings'));
 
     expect(screen.getByLabelText(/^Max attempts$/i)).toHaveValue('3');
+  });
+
+  it('switches the visible workspace section when a tab is clicked', async () => {
+    const user = userEvent.setup();
+    render(<App api={createTestApi()} />);
+
+    await screen.findByRole('heading', { name: 'ChunkKeeper' });
+
+    const overviewTab = screen.getByRole('tab', { name: /overview/i });
+    expect(overviewTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'tabpanel-overview');
+    expect(screen.getByText('Server profile')).toBeVisible();
+
+    await user.click(screen.getByRole('tab', { name: /operations/i }));
+    expect(screen.getByRole('tab', { name: /operations/i })).toHaveAttribute('aria-selected', 'true');
+    expect(overviewTab).toHaveAttribute('aria-selected', 'false');
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'tabpanel-operations');
+    expect(screen.getByText('Auto response')).toBeVisible();
+
+    await user.click(screen.getByRole('tab', { name: /inventory/i }));
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'tabpanel-inventory');
+
+    await user.click(screen.getByRole('tab', { name: /routine/i }));
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'tabpanel-routine');
+    expect(screen.getByText('AFK routine')).toBeVisible();
+
+    await user.click(screen.getByRole('tab', { name: /activity/i }));
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'tabpanel-activity');
+    expect(screen.getByText('Pulse rail')).toBeVisible();
   });
 });

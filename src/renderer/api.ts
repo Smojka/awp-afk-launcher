@@ -1,4 +1,12 @@
-import type { AppSettings, LauncherApi, LauncherState, SaveProfileInput } from '../shared/types';
+import type {
+  AppSettings,
+  DiscordRuntimeInput,
+  LauncherApi,
+  LauncherState,
+  OperationKind,
+  OperationStartRequest,
+  SaveProfileInput
+} from '../shared/types';
 
 const DEFAULT_LOCAL_WEB_PORT = '3000';
 
@@ -89,6 +97,32 @@ function createHttpLauncherApi(baseUrl: string): LauncherApi {
       request<LauncherState>(`/api/bots/${encodeURIComponent(profileId)}/chat`, {
         method: 'POST',
         body: JSON.stringify({ message })
+      }),
+    startOperation: async (profileId: string, operationRequest: OperationStartRequest) =>
+      request<LauncherState>(`/api/bots/${encodeURIComponent(profileId)}/operations`, {
+        method: 'POST',
+        body: JSON.stringify(operationRequest)
+      }),
+    stopOperation: async (profileId: string, kind: OperationKind) =>
+      request<LauncherState>(`/api/bots/${encodeURIComponent(profileId)}/operations/${encodeURIComponent(kind)}`, {
+        method: 'DELETE'
+      }),
+    runQuickScript: async (profileId: string, command: string) =>
+      request<LauncherState>(`/api/bots/${encodeURIComponent(profileId)}/quick-script`, {
+        method: 'POST',
+        body: JSON.stringify({ command })
+      }),
+    completeChat: async (profileId: string, partial: string) => {
+      const result = await request<{ completions: string[] }>(`/api/bots/${encodeURIComponent(profileId)}/complete`, {
+        method: 'POST',
+        body: JSON.stringify({ partial })
+      });
+      return result.completions;
+    },
+    configureDiscord: async (profileId: string, input: DiscordRuntimeInput) =>
+      request<LauncherState>(`/api/bots/${encodeURIComponent(profileId)}/discord`, {
+        method: 'POST',
+        body: JSON.stringify(input)
       }),
     updateSettings: async (patch: Partial<AppSettings>) =>
       request<LauncherState>('/api/settings', {

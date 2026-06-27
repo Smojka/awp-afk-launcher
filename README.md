@@ -18,6 +18,15 @@ The app is intentionally narrow: it is not a modpack launcher, hacked client, co
 - AFK routine actions: random look, jump pulse, sneak pulse, swing pulse, chat messages, auto-respawn, auto-eat, and reconnect backoff.
 - Turkish default chat messages that are varied and do not identify the session as automated.
 - Runtime-only lobby password handling. Lobby auth passwords are masked in the UI and stripped before profile JSON is written.
+- Multi-bot operations panel with per-profile server, version, and proxy settings.
+- Automatic cactus farm construction with configurable layers, radius, placement delay, and material checks.
+- Crop farming for wheat, carrot, potato, beetroot, nether wart, pumpkin, and melon with harvest, replant, collection, and live stats.
+- Live inventory telemetry for held item, armor, crafting slots, open storage windows, and main inventory.
+- Looping script automation with per-step delays, quick command buttons, and server tab completion.
+- Auto-response rules that match incoming chat and send configured replies or commands with per-rule cooldowns.
+- Runtime-only Discord bridge for webhook notifications and optional remote channel commands.
+- 3D area operations for mining and filling, with progress and block-level stats.
+- Generator mining for forward or 4-way digging with configurable direction and depth.
 - Local macOS DMG, Windows NSIS installer, and Windows portable EXE packaging.
 - GitHub Actions release workflow for publishing fresh installers.
 
@@ -125,6 +134,20 @@ The AFK routine is built from independent switches:
 - Reconnect: retries unexpected disconnects with backoff.
 
 The routine interval and jitter control how often one routine action is chosen. Unsafe interval and jitter values are clamped in code.
+
+## Operations Modules
+
+The Operations panel runs active modules against the selected online bot. Module settings can be saved to the profile, but runtime-only secrets such as Discord webhook URLs, bot tokens, lobby auth passwords, and proxy passwords are not persisted to profile JSON.
+
+- Cactus farm builds a cactus/sand placement queue from the bot position and blocks before starting if required materials are missing.
+- Crop farm scans the configured radius for mature crops, harvests supported crop types, replants when enabled, and counts harvested, replanted, and collected items.
+- Area operation mines or fills a 3D cuboid between the From and To coordinates, with guarded volume limits and per-block progress.
+- Generator mining digs forward or in four directions from the bot position using the configured direction, depth, and action delay.
+- Script automation runs delayed chat or command steps, can loop, exposes quick command buttons, and can request tab completion from the server.
+- Auto response matches incoming server or player messages and sends configured replies or commands, with cooldowns to avoid repeated spam.
+- Discord bridge forwards selected bot events through a webhook and can poll a configured channel for remote commands when a bot token and channel ID are supplied at runtime.
+
+Live inventory updates are captured from Mineflayer state and shown next to the operations controls, including armor, held item, crafting, open storage, and main inventory slots.
 
 ## Chat Messages
 

@@ -1,8 +1,15 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, screen, shell } from 'electron';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BotManager } from '../src/main/bot/botManager.js';
-import type { AppSettings, LauncherState, SaveProfileInput } from '../src/shared/types.js';
+import type {
+  AppSettings,
+  DiscordRuntimeInput,
+  LauncherState,
+  OperationKind,
+  OperationStartRequest,
+  SaveProfileInput
+} from '../src/shared/types.js';
 import { launcherUserDataDir } from './paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -13,13 +20,17 @@ let manager: BotManager | null = null;
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 const useCustomWindowControls = process.platform !== 'darwin';
+const PREFERRED_WINDOW_SIZE = { width: 1280, height: 760 };
+const MIN_WINDOW_SIZE = { width: 760, height: 540 };
+const WORK_AREA_MARGIN = 32;
 
 async function createWindow(): Promise<void> {
+  const initialBounds = getInitialWindowBounds();
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 760,
-    minWidth: 900,
-    minHeight: 640,
+    ...initialBounds,
+    minWidth: MIN_WINDOW_SIZE.width,
+    minHeight: MIN_WINDOW_SIZE.height,
     backgroundColor: '#0b0f13',
     title: 'ChunkKeeper',
     frame: !useCustomWindowControls,
@@ -45,6 +56,20 @@ async function createWindow(): Promise<void> {
   }
 }
 
+function getInitialWindowBounds(): { width: number; height: number } {
+  const { width: workAreaWidth, height: workAreaHeight } = screen.getPrimaryDisplay().workAreaSize;
+  return {
+    width: fitWindowDimension(PREFERRED_WINDOW_SIZE.width, MIN_WINDOW_SIZE.width, workAreaWidth),
+    height: fitWindowDimension(PREFERRED_WINDOW_SIZE.height, MIN_WINDOW_SIZE.height, workAreaHeight)
+  };
+}
+
+function fitWindowDimension(preferred: number, minimum: number, available: number): number {
+  const usable = Math.max(0, available - WORK_AREA_MARGIN);
+  if (usable <= 0) return preferred;
+  return Math.max(minimum, Math.min(preferred, usable));
+}
+
 function createManager(): BotManager {
   const botManager = new BotManager({
     userDataDir: launcherUserDataDir(),
@@ -68,6 +93,21 @@ function registerIpc(): void {
   ipcMain.handle('bot:startAll', async () => getManager().startAll());
   ipcMain.handle('bot:stopAll', async () => getManager().stopAll());
   ipcMain.handle('bot:sendChat', async (_event, profileId: string, message: string) => getManager().sendChat(profileId, message));
+  ipcMain.handle('bot:startOperation', async (_event, profileId: string, request: OperationStartRequest) =>
+    getManager().startOperation(profileId, request)
+  );
+  ipcMain.handle('bot:stopOperation', async (_event, profileId: string, kind: OperationKind) =>
+    getManager().stopOperation(profileId, kind)
+  );
+  ipcMain.handle('bot:runQuickScript', async (_event, profileId: string, command: string) =>
+    getManager().runQuickScript(profileId, command)
+  );
+  ipcMain.handle('bot:completeChat', async (_event, profileId: string, partial: string) =>
+    getManager().completeChat(profileId, partial)
+  );
+  ipcMain.handle('bot:configureDiscord', async (_event, profileId: string, input: DiscordRuntimeInput) =>
+    getManager().configureDiscord(profileId, input)
+  );
   ipcMain.handle('app:updateSettings', async (_event, patch: Partial<AppSettings>) => getManager().updateSettings(patch));
   ipcMain.handle('app:openUserData', async () => {
     await shell.openPath(launcherUserDataDir());

@@ -2,31 +2,51 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 're
 import { createPortal } from 'react-dom';
 import {
   Activity,
+  Boxes,
+  Bot,
   Check,
   CircleAlert,
   CircleHelp,
   FolderOpen,
   Gauge,
   Globe2,
+  Hammer,
   MessageSquare,
   Maximize2,
   Minimize2,
   Minus,
+  Pickaxe,
   Pencil,
   Play,
   Plus,
+  PackageOpen,
   RotateCcw,
   Save,
   Send,
   Settings,
   Square,
   Trash2,
+  Wheat,
   Wifi,
   X
 } from 'lucide-react';
 import { getLauncherApi } from './api';
 import { DEFAULT_SETTINGS } from '../shared/types';
-import type { AccountProfile, AppSettings, BotSessionSnapshot, LauncherApi, LauncherState, SaveProfileInput } from '../shared/types';
+import type {
+  AccountProfile,
+  AppSettings,
+  AutoResponseRule,
+  BotModulesConfig,
+  BotSessionSnapshot,
+  DiscordRuntimeInput,
+  InventoryItemSnapshot,
+  LauncherApi,
+  LauncherState,
+  OperationKind,
+  ProxyConfig,
+  SaveProfileInput,
+  ScriptStep
+} from '../shared/types';
 
 type DraftProfile = AccountProfile;
 
@@ -45,6 +65,81 @@ const STATE_LABEL: Record<BotSessionSnapshot['state'], string> = {
   error: 'Error'
 };
 
+const OPERATION_KINDS: OperationKind[] = ['cactusFarm', 'cropFarm', 'area', 'generator', 'script', 'discord'];
+
+const OPERATION_TITLES: Record<OperationKind, string> = {
+  cactusFarm: 'Cactus',
+  cropFarm: 'Crops',
+  area: 'Area',
+  generator: 'Generator',
+  script: 'Script',
+  discord: 'Discord'
+};
+
+const DEFAULT_MODULES_UI: BotModulesConfig = {
+  cactusFarm: { enabled: false, layers: 2, radius: 2, placementDelayMs: 550 },
+  cropFarm: { enabled: false, crop: 'wheat', radius: 4, harvestDelayMs: 750, replant: true, collectDrops: true },
+  area: {
+    enabled: false,
+    mode: 'mine',
+    from: { x: -2, y: 0, z: -2 },
+    to: { x: 2, y: 2, z: 2 },
+    fillBlock: 'cobblestone',
+    actionDelayMs: 450
+  },
+  generator: { enabled: false, mode: 'forward', direction: 'north', depth: 4, actionDelayMs: 350 },
+  script: {
+    enabled: false,
+    loop: true,
+    steps: [{ id: 'script-1', label: 'Step 1', command: '/spawn', delayMs: 1000 }],
+    quickCommands: [
+      { id: 'quick-spawn', label: 'Spawn', command: '/spawn', delayMs: 0 },
+      { id: 'quick-home', label: 'Home', command: '/home', delayMs: 0 }
+    ]
+  },
+  discord: {
+    enabled: false,
+    commandPrefix: '!ck ',
+    notifyChat: true,
+    notifyEvents: true,
+    pollCommands: false,
+    pollIntervalMs: 10000,
+    channelId: ''
+  },
+  autoResponse: {
+    enabled: false,
+    rules: [
+      {
+        id: 'auto-tpa',
+        enabled: true,
+        label: 'TPA accept',
+        match: 'tpa',
+        response: '/tpaccept',
+        cooldownMs: 5000
+      }
+    ]
+  }
+};
+
+const DEFAULT_PROXY_UI: ProxyConfig = {
+  enabled: false,
+  type: 'socks5',
+  host: '',
+  port: 0,
+  username: '',
+  password: ''
+};
+
+type TabKey = 'overview' | 'operations' | 'inventory' | 'routine' | 'activity';
+
+const TABS: { key: TabKey; label: string; Icon: typeof Activity }[] = [
+  { key: 'overview', label: 'Overview', Icon: Gauge },
+  { key: 'operations', label: 'Operations', Icon: Pickaxe },
+  { key: 'inventory', label: 'Inventory', Icon: Boxes },
+  { key: 'routine', label: 'Routine', Icon: RotateCcw },
+  { key: 'activity', label: 'Activity', Icon: Activity }
+];
+
 export function App({ api }: { api?: LauncherApi } = {}) {
   const [apiClient] = useState<LauncherApi | null>(() => {
     if (api) return api;
@@ -61,6 +156,9 @@ export function App({ api }: { api?: LauncherApi } = {}) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
   const [windowMaximized, setWindowMaximized] = useState(false);
+  const [discordDraft, setDiscordDraft] = useState<DiscordRuntimeInput>({ enabled: false });
+  const [chatCompletions, setChatCompletions] = useState<string[]>([]);
+  const [activeTab, setActiveTab] = useState<TabKey>('overview');
 
   useEffect(() => {
     if (!apiClient) {
@@ -141,6 +239,33 @@ export function App({ api }: { api?: LauncherApi } = {}) {
     const message = chatMessage.trim();
     setChatMessage('');
     await run(() => apiClient!.sendChat(profileId, message));
+  }
+
+  async function startOperation(kind: OperationKind, config?: BotModulesConfig[OperationKind]) {
+    if (!draft?.id) return;
+    await run(() => apiClient!.startOperation(draft.id, { kind, config }));
+  }
+
+  async function stopOperation(kind: OperationKind) {
+    if (!draft?.id) return;
+    await run(() => apiClient!.stopOperation(draft.id, kind));
+  }
+
+  async function runQuickScript(command: string) {
+    if (!draft?.id) return;
+    await run(() => apiClient!.runQuickScript(draft.id, command));
+  }
+
+  async function completeChat(partial: string) {
+    if (!draft?.id) return;
+    const completions = await apiClient!.completeChat(draft.id, partial);
+    setChatCompletions(completions);
+  }
+
+  async function applyDiscordRuntime(input: DiscordRuntimeInput) {
+    if (!draft?.id) return;
+    setDiscordDraft(input);
+    await run(() => apiClient!.configureDiscord(draft.id, input));
   }
 
   if (!state || !draft || !apiClient) {
@@ -317,46 +442,123 @@ export function App({ api }: { api?: LauncherApi } = {}) {
             </div>
           </section>
 
-          <div className="kpis">
-            <Kpi label="Health" value={selectedSession?.health ?? '—'} max={20} tone="ok" />
-            <Kpi label="Hunger" value={selectedSession?.food ?? '—'} max={20} tone="warn" />
-            <Kpi label="Ping" value={selectedSession?.ping ?? '—'} unit={selectedSession?.ping ? 'ms' : undefined} />
-            <Kpi label="Players" value={selectedSession?.playersOnline ?? '—'} />
-          </div>
+          <nav className="tabnav" role="tablist" aria-label="Workspace sections">
+            {TABS.map((tab) => {
+              const TabIcon = tab.Icon;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  role="tab"
+                  id={`tab-${tab.key}`}
+                  aria-controls={`tabpanel-${tab.key}`}
+                  aria-selected={activeTab === tab.key}
+                  className={`tabnav__tab ${activeTab === tab.key ? 'is-active' : ''}`}
+                  onClick={() => setActiveTab(tab.key)}
+                >
+                  <TabIcon size={15} />
+                  {tab.label}
+                </button>
+              );
+            })}
+          </nav>
 
-          <div className="coords">
-            <Coord k="Pos X" v={position?.x ?? '—'} />
-            <Coord k="Pos Y" v={position?.y ?? '—'} />
-            <Coord k="Pos Z" v={position?.z ?? '—'} />
-            <Coord k="Dim" v={selectedSession?.dimension ?? '—'} />
-            <Coord
-              k="Inv"
-              v={selectedSession?.inventoryUsed == null ? '—' : `${selectedSession.inventoryUsed}/${selectedSession.inventorySize ?? 46}`}
-            />
-          </div>
+          <section
+            className="tabpane tabpane--overview"
+            role="tabpanel"
+            id="tabpanel-overview"
+            aria-labelledby="tab-overview"
+            hidden={activeTab !== 'overview'}
+          >
+            <div className="kpis">
+              <Kpi label="Health" value={selectedSession?.health ?? '—'} max={20} tone="ok" />
+              <Kpi label="Hunger" value={selectedSession?.food ?? '—'} max={20} tone="warn" />
+              <Kpi label="Ping" value={selectedSession?.ping ?? '—'} unit={selectedSession?.ping ? 'ms' : undefined} />
+              <Kpi label="Players" value={selectedSession?.playersOnline ?? '—'} />
+            </div>
 
-          <ServerProfileSummary
-            draft={draft}
-            onEdit={() => setProfileEditorOpen(true)}
-            onSave={() => saveProfileDraft(draft)}
-          />
+            <div className="coords">
+              <Coord k="Pos X" v={position?.x ?? '—'} />
+              <Coord k="Pos Y" v={position?.y ?? '—'} />
+              <Coord k="Pos Z" v={position?.z ?? '—'} />
+              <Coord k="Dim" v={selectedSession?.dimension ?? '—'} />
+              <Coord
+                k="Inv"
+                v={selectedSession?.inventoryUsed == null ? '—' : `${selectedSession.inventoryUsed}/${selectedSession.inventorySize ?? 46}`}
+              />
+            </div>
 
-          <div className="tables">
-            <ChatConsole
+            <div className="overview-grid">
+              <ServerProfileSummary
+                draft={draft}
+                onEdit={() => setProfileEditorOpen(true)}
+                onSave={() => saveProfileDraft(draft)}
+              />
+              <ConnectionPanel session={selectedSession} stateLabel={STATE_LABEL[liveState]} />
+            </div>
+          </section>
+
+          <section
+            className="tabpane"
+            role="tabpanel"
+            id="tabpanel-operations"
+            aria-labelledby="tab-operations"
+            hidden={activeTab !== 'operations'}
+          >
+            <OperationsPanel
+              draft={draft}
               session={selectedSession}
-              value={chatMessage}
-              onChange={setChatMessage}
-              onSend={sendChat}
-              showTimestamps={state.settings.showChatTimestamps}
+              discordDraft={discordDraft}
+              chatCompletions={chatCompletions}
+              onChange={setDraft}
+              onSave={() => saveProfileDraft(draft)}
+              onStart={startOperation}
+              onStop={stopOperation}
+              onQuickScript={runQuickScript}
+              onCompleteChat={completeChat}
+              onApplyDiscord={applyDiscordRuntime}
             />
-            <PulseRail session={selectedSession} />
-          </div>
-        </main>
+          </section>
 
-        <aside className="rail">
-          <RoutinePanel draft={draft} onChange={setDraft} onSave={() => saveProfileDraft(draft)} />
-          <ConnectionPanel session={selectedSession} stateLabel={STATE_LABEL[liveState]} />
-        </aside>
+          <section
+            className="tabpane"
+            role="tabpanel"
+            id="tabpanel-inventory"
+            aria-labelledby="tab-inventory"
+            hidden={activeTab !== 'inventory'}
+          >
+            <InventoryPanel session={selectedSession} />
+          </section>
+
+          <section
+            className="tabpane"
+            role="tabpanel"
+            id="tabpanel-routine"
+            aria-labelledby="tab-routine"
+            hidden={activeTab !== 'routine'}
+          >
+            <RoutinePanel draft={draft} onChange={setDraft} onSave={() => saveProfileDraft(draft)} />
+          </section>
+
+          <section
+            className="tabpane"
+            role="tabpanel"
+            id="tabpanel-activity"
+            aria-labelledby="tab-activity"
+            hidden={activeTab !== 'activity'}
+          >
+            <div className="tables">
+              <ChatConsole
+                session={selectedSession}
+                value={chatMessage}
+                onChange={setChatMessage}
+                onSend={sendChat}
+                showTimestamps={state.settings.showChatTimestamps}
+              />
+              <PulseRail session={selectedSession} />
+            </div>
+          </section>
+        </main>
       </div>
 
       <footer className="statusbar">
@@ -592,6 +794,7 @@ function ServerProfileSummary({
         <SummaryItem label="Host" value={`${draft.host || 'host'}:${draft.port || 25565}`} mono />
         <SummaryItem label="Version" value={draft.version || 'Auto detect'} />
         <SummaryItem label="Auth mode" value={draft.authMode} />
+        <SummaryItem label="Proxy" value={profileProxy(draft).enabled ? `${profileProxy(draft).type} ${profileProxy(draft).host}` : 'Off'} empty={!profileProxy(draft).enabled} />
         <SummaryItem label="Lobby auth" value={draft.startup.enabled ? lobbyAuthLabel(draft.startup.authMode) : 'Off'} />
         <SummaryItem label="Transfer" value={draft.startup.transferCommand || 'None'} mono empty={!draft.startup.transferCommand} />
         <SummaryItem label="Reconnect" value={draft.reconnect.enabled ? `${draft.reconnect.maxAttempts} attempts` : 'Off'} />
@@ -659,6 +862,8 @@ function ProfileEditorModal({
 
   const updateReconnect = (patch: Partial<DraftProfile['reconnect']>) =>
     setWorkingDraft({ ...workingDraft, reconnect: { ...workingDraft.reconnect, ...patch } });
+  const updateProxy = (patch: Partial<ProxyConfig>) =>
+    setWorkingDraft({ ...workingDraft, proxy: { ...profileProxy(workingDraft), ...patch } });
 
   return (
     <div className="modal-scrim" onClick={onClose}>
@@ -760,6 +965,50 @@ function ProfileEditorModal({
 
           <section className="profile-editor__section">
             <div className="profile-editor__section-head">
+              <span className="overline">Proxy</span>
+            </div>
+            <div className="toggles">
+              <Toggle
+                label="Use proxy for this bot"
+                help="Bu profil bağlanırken kendi proxy socket'ini kullanır. Proxy password diske yazılmaz."
+                checked={profileProxy(workingDraft).enabled}
+                onChange={(value) => updateProxy({ enabled: value })}
+              />
+            </div>
+            <div className="form form--profile form--compact" data-disabled={!profileProxy(workingDraft).enabled}>
+              <label className="field">
+                <span className="field__label">Proxy type</span>
+                <select
+                  value={profileProxy(workingDraft).type}
+                  onChange={(event) => updateProxy({ type: event.target.value as ProxyConfig['type'] })}
+                >
+                  <option value="socks5">SOCKS5</option>
+                  <option value="socks4">SOCKS4</option>
+                  <option value="http">HTTP CONNECT</option>
+                  <option value="https">HTTPS CONNECT</option>
+                </select>
+              </label>
+              <Field label="Proxy host" value={profileProxy(workingDraft).host} mono onChange={(value) => updateProxy({ host: value })} />
+              <Field
+                label="Proxy port"
+                value={String(profileProxy(workingDraft).port || '')}
+                mono
+                inputMode="numeric"
+                onChange={(value) => updateProxy({ port: Number(value) || 0 })}
+              />
+              <Field label="Proxy username" value={profileProxy(workingDraft).username} onChange={(value) => updateProxy({ username: value })} />
+              <Field
+                label="Proxy password"
+                value={profileProxy(workingDraft).password}
+                type="password"
+                autoComplete="current-password"
+                onChange={(value) => updateProxy({ password: value })}
+              />
+            </div>
+          </section>
+
+          <section className="profile-editor__section">
+            <div className="profile-editor__section-head">
               <span className="overline">Join flow</span>
             </div>
             <StartupFlowPanel draft={workingDraft} onChange={setWorkingDraft} />
@@ -835,6 +1084,7 @@ function AccountRow({
   onSelect: () => void;
 }) {
   const state = session?.state ?? 'idle';
+  const stateLabel = STATE_LABEL[state];
   return (
     <div className="row-with-help">
       <button className={`row ${selected ? 'is-selected' : ''}`} onClick={onSelect}>
@@ -842,7 +1092,7 @@ function AccountRow({
         <span className="row__copy">
           <strong>{profile.label}</strong>
           <span>
-            {profile.authMode} · {profile.host}
+            {stateLabel} · {profile.host}
           </span>
         </span>
         <span className="row__meta">
@@ -975,6 +1225,540 @@ function PulseRail({ session }: { session: BotSessionSnapshot | null }) {
   );
 }
 
+function OperationsPanel({
+  draft,
+  session,
+  discordDraft,
+  chatCompletions,
+  onChange,
+  onSave,
+  onStart,
+  onStop,
+  onQuickScript,
+  onCompleteChat,
+  onApplyDiscord
+}: {
+  draft: DraftProfile;
+  session: BotSessionSnapshot | null;
+  discordDraft: DiscordRuntimeInput;
+  chatCompletions: string[];
+  onChange: (profile: DraftProfile) => void;
+  onSave: () => void;
+  onStart: (kind: OperationKind, config?: BotModulesConfig[OperationKind]) => void | Promise<void>;
+  onStop: (kind: OperationKind) => void | Promise<void>;
+  onQuickScript: (command: string) => void | Promise<void>;
+  onCompleteChat: (partial: string) => void | Promise<void>;
+  onApplyDiscord: (input: DiscordRuntimeInput) => void | Promise<void>;
+}) {
+  const modules = profileModules(draft);
+  const [scriptPartial, setScriptPartial] = useState('/s');
+  const [runtimeDiscord, setRuntimeDiscord] = useState<DiscordRuntimeInput>(discordDraft);
+  const updateModules = (patch: Partial<BotModulesConfig>) => onChange({ ...draft, modules: { ...modules, ...patch } });
+  const updateCactus = (patch: Partial<BotModulesConfig['cactusFarm']>) =>
+    updateModules({ cactusFarm: { ...modules.cactusFarm, ...patch } });
+  const updateCrop = (patch: Partial<BotModulesConfig['cropFarm']>) =>
+    updateModules({ cropFarm: { ...modules.cropFarm, ...patch } });
+  const updateArea = (patch: Partial<BotModulesConfig['area']>) => updateModules({ area: { ...modules.area, ...patch } });
+  const updateGenerator = (patch: Partial<BotModulesConfig['generator']>) =>
+    updateModules({ generator: { ...modules.generator, ...patch } });
+  const updateScript = (patch: Partial<BotModulesConfig['script']>) =>
+    updateModules({ script: { ...modules.script, ...patch } });
+  const updateDiscord = (patch: Partial<BotModulesConfig['discord']>) =>
+    updateModules({ discord: { ...modules.discord, ...patch } });
+  const updateAutoResponse = (patch: Partial<BotModulesConfig['autoResponse']>) =>
+    updateModules({ autoResponse: { ...modules.autoResponse, ...patch } });
+
+  return (
+    <section className="panel operations">
+      <div className="panel__head">
+        <span className="panel__title">
+          <Bot size={14} />
+          Operations
+        </span>
+        <div className="panel__actions">
+          <ActionWithHelp help="Modül ayarlarını seçili profile kaydeder. Discord webhook ve bot token runtime-only kalır.">
+            <button className="btn btn--sm" onClick={onSave}>
+              <Save size={14} />
+              Save modules
+            </button>
+          </ActionWithHelp>
+        </div>
+      </div>
+      <div className="panel__body operations__body">
+        <div className="operation-strip">
+          {OPERATION_KINDS.map((kind) => {
+            const operation = session?.operations?.[kind];
+            return (
+              <div className="operation-chip" key={kind}>
+                <span>{OPERATION_TITLES[kind]}</span>
+                <strong className={`operation-chip__state operation-chip__state--${operation?.state ?? 'idle'}`}>
+                  {operation?.state ?? 'idle'}
+                </strong>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="operations__grid">
+          <section className="module-card">
+            <div className="module-card__head">
+              <span className="panel__title">
+                <Hammer size={14} />
+                Cactus farm
+              </span>
+              <OperationButtons
+                kind="cactusFarm"
+                session={session}
+                onStart={() => onStart('cactusFarm', modules.cactusFarm)}
+                onStop={() => onStop('cactusFarm')}
+              />
+            </div>
+            <div className="module-card__body">
+              <Slider
+                label="Layers"
+                help="Kaktüs farm için üst üste kurulacak kat sayısıdır."
+                min={1}
+                max={12}
+                value={modules.cactusFarm.layers}
+                display={`${modules.cactusFarm.layers}`}
+                onChange={(value) => updateCactus({ layers: value })}
+              />
+              <Slider
+                label="Radius"
+                help="Botun bulunduğu noktanın çevresinde kullanılacak farm yarıçapıdır."
+                min={1}
+                max={8}
+                value={modules.cactusFarm.radius}
+                display={`${modules.cactusFarm.radius}`}
+                onChange={(value) => updateCactus({ radius: value })}
+              />
+              <Field
+                label="Place delay"
+                value={String(modules.cactusFarm.placementDelayMs)}
+                mono
+                suffix="ms"
+                inputMode="numeric"
+                onChange={(value) => updateCactus({ placementDelayMs: Number(value) || 0 })}
+              />
+            </div>
+          </section>
+
+          <section className="module-card">
+            <div className="module-card__head">
+              <span className="panel__title">
+                <Wheat size={14} />
+                Crop farm
+              </span>
+              <OperationButtons
+                kind="cropFarm"
+                session={session}
+                onStart={() => onStart('cropFarm', modules.cropFarm)}
+                onStop={() => onStop('cropFarm')}
+              />
+            </div>
+            <div className="module-card__body">
+              <label className="field">
+                <span className="field__label">Crop</span>
+                <select
+                  value={modules.cropFarm.crop}
+                  onChange={(event) => updateCrop({ crop: event.target.value as BotModulesConfig['cropFarm']['crop'] })}
+                >
+                  <option value="wheat">Wheat</option>
+                  <option value="carrot">Carrot</option>
+                  <option value="potato">Potato</option>
+                  <option value="beetroot">Beetroot</option>
+                  <option value="nether_wart">Nether wart</option>
+                  <option value="pumpkin">Pumpkin</option>
+                  <option value="melon">Melon</option>
+                </select>
+              </label>
+              <Slider
+                label="Radius"
+                help="Hasat taraması için bot çevresindeki yarıçap."
+                min={1}
+                max={12}
+                value={modules.cropFarm.radius}
+                display={`${modules.cropFarm.radius}`}
+                onChange={(value) => updateCrop({ radius: value })}
+              />
+              <Field
+                label="Harvest delay"
+                value={String(modules.cropFarm.harvestDelayMs)}
+                mono
+                suffix="ms"
+                inputMode="numeric"
+                onChange={(value) => updateCrop({ harvestDelayMs: Number(value) || 0 })}
+              />
+              <div className="toggles toggles--inline">
+                <Toggle
+                  label="Replant"
+                  help="Hasattan sonra uygun tohum/ürün varsa aynı bloğa yeniden dikmeyi dener."
+                  checked={modules.cropFarm.replant}
+                  onChange={(value) => updateCrop({ replant: value })}
+                />
+                <Toggle
+                  label="Collect stats"
+                  help="Hasat edilen ürünleri canlı istatistik olarak sayar."
+                  checked={modules.cropFarm.collectDrops}
+                  onChange={(value) => updateCrop({ collectDrops: value })}
+                />
+              </div>
+            </div>
+          </section>
+
+          <section className="module-card module-card--wide">
+            <div className="module-card__head">
+              <span className="panel__title">
+                <Pickaxe size={14} />
+                Area operation
+              </span>
+              <OperationButtons
+                kind="area"
+                session={session}
+                onStart={() => onStart('area', modules.area)}
+                onStop={() => onStop('area')}
+              />
+            </div>
+            <div className="module-card__body module-card__body--coords">
+              <label className="field">
+                <span className="field__label">Mode</span>
+                <select value={modules.area.mode} onChange={(event) => updateArea({ mode: event.target.value as 'mine' | 'fill' })}>
+                  <option value="mine">Mine</option>
+                  <option value="fill">Fill</option>
+                </select>
+              </label>
+              <PositionFields
+                label="From"
+                value={modules.area.from}
+                onChange={(from) => updateArea({ from })}
+              />
+              <PositionFields label="To" value={modules.area.to} onChange={(to) => updateArea({ to })} />
+              <Field label="Fill block" value={modules.area.fillBlock} mono onChange={(value) => updateArea({ fillBlock: value })} />
+              <Field
+                label="Delay"
+                value={String(modules.area.actionDelayMs)}
+                mono
+                suffix="ms"
+                inputMode="numeric"
+                onChange={(value) => updateArea({ actionDelayMs: Number(value) || 0 })}
+              />
+            </div>
+          </section>
+
+          <section className="module-card">
+            <div className="module-card__head">
+              <span className="panel__title">
+                <Pickaxe size={14} />
+                Generator
+              </span>
+              <OperationButtons
+                kind="generator"
+                session={session}
+                onStart={() => onStart('generator', modules.generator)}
+                onStop={() => onStop('generator')}
+              />
+            </div>
+            <div className="module-card__body">
+              <label className="field">
+                <span className="field__label">Mode</span>
+                <select
+                  value={modules.generator.mode}
+                  onChange={(event) => updateGenerator({ mode: event.target.value as BotModulesConfig['generator']['mode'] })}
+                >
+                  <option value="forward">Forward</option>
+                  <option value="four_way">4-way</option>
+                </select>
+              </label>
+              <label className="field">
+                <span className="field__label">Direction</span>
+                <select
+                  value={modules.generator.direction}
+                  onChange={(event) => updateGenerator({ direction: event.target.value as BotModulesConfig['generator']['direction'] })}
+                >
+                  <option value="north">North</option>
+                  <option value="south">South</option>
+                  <option value="east">East</option>
+                  <option value="west">West</option>
+                </select>
+              </label>
+              <Slider
+                label="Depth"
+                help="Tek yönlü veya 4 yönlü kazıda her yönde hedeflenen blok sayısı."
+                min={1}
+                max={64}
+                value={modules.generator.depth}
+                display={`${modules.generator.depth}`}
+                onChange={(value) => updateGenerator({ depth: value })}
+              />
+            </div>
+          </section>
+
+          <section className="module-card module-card--wide">
+            <div className="module-card__head">
+              <span className="panel__title">
+                <MessageSquare size={14} />
+                Script and Discord
+              </span>
+              <div className="module-card__actions">
+                <OperationButtons
+                  kind="script"
+                  session={session}
+                  onStart={() => onStart('script', modules.script)}
+                  onStop={() => onStop('script')}
+                />
+              </div>
+            </div>
+            <div className="module-card__body module-card__body--script">
+              <Toggle
+                label="Loop script"
+                help="Açıkken script adımları son komuttan sonra başa döner."
+                checked={modules.script.loop}
+                onChange={(value) => updateScript({ loop: value })}
+              />
+              <label className="field">
+                <span className="field__label">Script steps</span>
+                <textarea
+                  rows={4}
+                  value={scriptStepsToText(modules.script.steps)}
+                  onChange={(event) => updateScript({ steps: textToScriptSteps(event.target.value, 'step') })}
+                  placeholder="/spawn | 1000"
+                />
+              </label>
+              <label className="field">
+                <span className="field__label">Quick buttons</span>
+                <textarea
+                  rows={3}
+                  value={scriptStepsToText(modules.script.quickCommands)}
+                  onChange={(event) => updateScript({ quickCommands: textToScriptSteps(event.target.value, 'quick') })}
+                  placeholder="/home | 0"
+                />
+              </label>
+              <div className="quick-buttons">
+                {modules.script.quickCommands.map((step) => (
+                  <ActionWithHelp key={step.id} help={`${step.command} komutunu seçili çevrimiçi bota hemen gönderir.`}>
+                    <button className="btn btn--sm" onClick={() => onQuickScript(step.command)}>
+                      <Send size={13} />
+                      {step.label}
+                    </button>
+                  </ActionWithHelp>
+                ))}
+              </div>
+              <div className="completion-row">
+                <Field label="Tab complete" value={scriptPartial} mono onChange={setScriptPartial} />
+                <ActionWithHelp help="Seçili çevrimiçi bot üzerinden sunucunun tab completion önerilerini ister.">
+                  <button className="btn btn--sm" onClick={() => onCompleteChat(scriptPartial)}>
+                    Complete
+                  </button>
+                </ActionWithHelp>
+              </div>
+              {chatCompletions.length > 0 ? (
+                <div className="completion-list">
+                  {chatCompletions.map((item) => (
+                    <span className="tag" key={item}>
+                      {item}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="auto-response-box">
+                <Toggle
+                  label="Auto response"
+                  help="Sunucudan gelen mesajlarda eşleşme yakalarsa seçili bot otomatik yanıt veya komut gönderir."
+                  checked={modules.autoResponse.enabled}
+                  onChange={(value) => updateAutoResponse({ enabled: value })}
+                />
+                <label className="field">
+                  <span className="field__label">Match replies</span>
+                  <textarea
+                    rows={3}
+                    value={autoResponseRulesToText(modules.autoResponse.rules)}
+                    onChange={(event) => updateAutoResponse({ rules: textToAutoResponseRules(event.target.value) })}
+                    placeholder="TPA accept | tpa | /tpaccept | 5000"
+                  />
+                </label>
+              </div>
+
+              <div className="discord-box">
+                <div className="discord-box__head">
+                  <Toggle
+                    label="Discord bridge"
+                    help="Webhook ve bot token bu runtime oturumunda kullanılır; profile JSON içine yazılmaz."
+                    checked={modules.discord.enabled}
+                    onChange={(value) => updateDiscord({ enabled: value })}
+                  />
+                  <OperationButtons
+                    kind="discord"
+                    session={session}
+                    onStart={() => onApplyDiscord({ ...runtimeDiscord, enabled: true, channelId: runtimeDiscord.channelId || modules.discord.channelId })}
+                    onStop={() => onApplyDiscord({ ...runtimeDiscord, enabled: false })}
+                  />
+                </div>
+                <div className="form form--discord">
+                  <Field
+                    label="Webhook URL"
+                    value={runtimeDiscord.webhookUrl ?? ''}
+                    type="password"
+                    onChange={(value) => setRuntimeDiscord({ ...runtimeDiscord, webhookUrl: value })}
+                  />
+                  <Field
+                    label="Bot token"
+                    value={runtimeDiscord.botToken ?? ''}
+                    type="password"
+                    onChange={(value) => setRuntimeDiscord({ ...runtimeDiscord, botToken: value })}
+                  />
+                  <Field
+                    label="Channel ID"
+                    value={runtimeDiscord.channelId ?? modules.discord.channelId}
+                    mono
+                    onChange={(value) => {
+                      setRuntimeDiscord({ ...runtimeDiscord, channelId: value });
+                      updateDiscord({ channelId: value });
+                    }}
+                  />
+                  <Field
+                    label="Command prefix"
+                    value={modules.discord.commandPrefix}
+                    mono
+                    onChange={(value) => updateDiscord({ commandPrefix: value })}
+                  />
+                </div>
+                <div className="toggles toggles--inline">
+                  <Toggle
+                    label="Notify chat"
+                    help="Sunucudan gelen chat satırlarını Discord webhook kanalına yollar."
+                    checked={modules.discord.notifyChat}
+                    onChange={(value) => updateDiscord({ notifyChat: value })}
+                  />
+                  <Toggle
+                    label="Remote commands"
+                    help="Bot token ve channel ID varsa Discord kanalından prefix ile gelen komutları oyuna yollar."
+                    checked={modules.discord.pollCommands}
+                    onChange={(value) => updateDiscord({ pollCommands: value })}
+                  />
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function OperationButtons({
+  kind,
+  session,
+  onStart,
+  onStop
+}: {
+  kind: OperationKind;
+  session: BotSessionSnapshot | null;
+  onStart: () => void | Promise<void>;
+  onStop: () => void | Promise<void>;
+}) {
+  const state = session?.operations?.[kind]?.state ?? 'idle';
+  const running = state === 'running';
+  const title = OPERATION_TITLES[kind];
+  return (
+    <div className="operation-buttons">
+      <ActionWithHelp help={`${title} modülünü seçili çevrimiçi bot üzerinde başlatır.`}>
+        <button className="btn btn--sm btn--primary" disabled={running} aria-label={`Start ${title}`} onClick={() => void onStart()}>
+          <Play size={13} />
+          Start
+        </button>
+      </ActionWithHelp>
+      <ActionWithHelp help={`${title} modülünü durdurur ve varsa bekleyen iş kuyruğunu temizler.`}>
+        <button className="btn btn--sm" disabled={!running} aria-label={`Stop ${title}`} onClick={() => void onStop()}>
+          <Square size={13} />
+          Stop
+        </button>
+      </ActionWithHelp>
+    </div>
+  );
+}
+
+function InventoryPanel({ session }: { session: BotSessionSnapshot | null }) {
+  const inventory = session?.inventory;
+  const slots = inventory?.storage ?? [];
+  return (
+    <section className="panel inventory-panel">
+      <div className="panel__head">
+        <span className="panel__title">
+          <PackageOpen size={14} />
+          Live inventory
+        </span>
+        <span className="tag">{session?.inventoryUsed == null ? 'offline' : `${session.inventoryUsed}/${session.inventorySize ?? 46}`}</span>
+      </div>
+      <div className="panel__body inventory-panel__body">
+        <div className="held-item">
+          <span className="overline">Held</span>
+          <strong>{inventory?.heldItem?.displayName ?? 'Empty hand'}</strong>
+        </div>
+        <InventorySection title="Armor" items={inventory?.armor ?? []} emptyLabel="No armor" />
+        <InventorySection title="Crafting" items={inventory?.crafting ?? []} emptyLabel="Crafting grid empty" />
+        <div className="inventory-grid" aria-label="Inventory slots">
+          {Array.from({ length: 36 }, (_, index) => {
+            const item = slots[index];
+            return (
+              <div className="slot" key={index} title={item ? `${item.displayName} x${item.count}` : 'Empty'}>
+                {item ? (
+                  <>
+                    <span>{shortItemName(item.displayName)}</span>
+                    <strong>{item.count}</strong>
+                  </>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+        {inventory?.openWindowTitle ? (
+          <div className="held-item">
+            <span className="overline">Open window</span>
+            <strong>{inventory.openWindowTitle}</strong>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function InventorySection({ title, items, emptyLabel }: { title: string; items: InventoryItemSnapshot[]; emptyLabel: string }) {
+  return (
+    <div className="inventory-section">
+      <span className="overline">{title}</span>
+      <div className="inventory-section__items">
+        {items.length === 0 ? <span className="inventory-empty">{emptyLabel}</span> : null}
+        {items.map((item) => (
+          <span className="tag" key={`${item.slot}-${item.name}`}>
+            {shortItemName(item.displayName)} x{item.count}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PositionFields({
+  label,
+  value,
+  onChange
+}: {
+  label: string;
+  value: BotModulesConfig['area']['from'];
+  onChange: (value: BotModulesConfig['area']['from']) => void;
+}) {
+  const update = (axis: 'x' | 'y' | 'z', nextValue: string) => onChange({ ...value, [axis]: Number(nextValue) || 0 });
+  return (
+    <fieldset className="position-fields">
+      <legend>{label}</legend>
+      <input className="mono" value={String(value.x)} inputMode="numeric" aria-label={`${label} X`} onChange={(event) => update('x', event.target.value)} />
+      <input className="mono" value={String(value.y)} inputMode="numeric" aria-label={`${label} Y`} onChange={(event) => update('y', event.target.value)} />
+      <input className="mono" value={String(value.z)} inputMode="numeric" aria-label={`${label} Z`} onChange={(event) => update('z', event.target.value)} />
+    </fieldset>
+  );
+}
+
 function RoutinePanel({
   draft,
   onChange,
@@ -1059,43 +1843,45 @@ function RoutinePanel({
           />
         </div>
 
-        <Slider
-          label="Base interval"
-          help="AFK routine için temel bekleme süresidir. Her rutin adımı bu sürenin etrafında planlanır."
-          min={3000}
-          max={90000}
-          step={1000}
-          value={routine.intervalMs}
-          display={`${Math.round(routine.intervalMs / 1000)}s`}
-          onChange={(value) => updateRoutine({ intervalMs: value })}
-        />
-        <Slider
-          label="Interval jitter"
-          help="Base interval üzerine rastgele sapma ekler. Yüzde büyüdükçe rutin adımları daha değişken aralıklarla çalışır."
-          min={0}
-          max={80}
-          value={routine.jitterPercent}
-          display={`${routine.jitterPercent}%`}
-          onChange={(value) => updateRoutine({ jitterPercent: value })}
-        />
-        <Slider
-          label="Eat below"
-          help="Hunger bu değere eşit veya altına inerse auto-eat güvenli yiyecek arar ve yemeye çalışır."
-          min={1}
-          max={19}
-          value={routine.eatAtFood}
-          display={`${routine.eatAtFood}/20`}
-          onChange={(value) => updateRoutine({ eatAtFood: value, pauseAtFood: Math.min(routine.pauseAtFood, value) })}
-        />
-        <Slider
-          label="Pause below"
-          help="Hunger bu değere kadar düşer ve güvenli yiyecek yoksa AFK hareketleri duraklar. Hunger toparlanınca rutin devam eder."
-          min={0}
-          max={routine.eatAtFood}
-          value={routine.pauseAtFood}
-          display={`${routine.pauseAtFood}/20`}
-          onChange={(value) => updateRoutine({ pauseAtFood: value })}
-        />
+        <div className="routine__sliders">
+          <Slider
+            label="Base interval"
+            help="AFK routine için temel bekleme süresidir. Her rutin adımı bu sürenin etrafında planlanır."
+            min={3000}
+            max={90000}
+            step={1000}
+            value={routine.intervalMs}
+            display={`${Math.round(routine.intervalMs / 1000)}s`}
+            onChange={(value) => updateRoutine({ intervalMs: value })}
+          />
+          <Slider
+            label="Interval jitter"
+            help="Base interval üzerine rastgele sapma ekler. Yüzde büyüdükçe rutin adımları daha değişken aralıklarla çalışır."
+            min={0}
+            max={80}
+            value={routine.jitterPercent}
+            display={`${routine.jitterPercent}%`}
+            onChange={(value) => updateRoutine({ jitterPercent: value })}
+          />
+          <Slider
+            label="Eat below"
+            help="Hunger bu değere eşit veya altına inerse auto-eat güvenli yiyecek arar ve yemeye çalışır."
+            min={1}
+            max={19}
+            value={routine.eatAtFood}
+            display={`${routine.eatAtFood}/20`}
+            onChange={(value) => updateRoutine({ eatAtFood: value, pauseAtFood: Math.min(routine.pauseAtFood, value) })}
+          />
+          <Slider
+            label="Pause below"
+            help="Hunger bu değere kadar düşer ve güvenli yiyecek yoksa AFK hareketleri duraklar. Hunger toparlanınca rutin devam eder."
+            min={0}
+            max={routine.eatAtFood}
+            value={routine.pauseAtFood}
+            display={`${routine.pauseAtFood}/20`}
+            onChange={(value) => updateRoutine({ pauseAtFood: value })}
+          />
+        </div>
 
         <label className="field">
           <span className="field__label">Chat messages</span>
@@ -1529,7 +2315,7 @@ function Kpi({
       </strong>
       {max ? (
         <span className="bar">
-          <span className={`bar__fill bar__fill--${tone}`} style={{ width: `${pct}%` }} />
+          <span className={`bar__fill bar__fill--${tone}`} style={{ transform: `scaleX(${pct / 100})` }} />
         </span>
       ) : null}
     </div>
@@ -1602,7 +2388,9 @@ function createNewAccountDraft(template: DraftProfile, settings: AppSettings, ac
       eatAtFood,
       pauseAtFood
     },
-    reconnect: { ...settings.defaultReconnect }
+    reconnect: { ...settings.defaultReconnect },
+    proxy: { ...DEFAULT_PROXY_UI },
+    modules: profileModules(template)
   };
 }
 
@@ -1634,8 +2422,101 @@ function normalizeDraft(draft: DraftProfile): SaveProfileInput {
       intervalMs: Math.max(3000, Number(draft.routine.intervalMs) || 18000),
       jitterPercent: Math.max(0, Math.min(80, Number(draft.routine.jitterPercent) || 0)),
       chatMessages: draft.routine.chatMessages.map((message) => message.trim()).filter(Boolean)
+    },
+    proxy: {
+      ...profileProxy(draft),
+      host: profileProxy(draft).host.trim(),
+      username: profileProxy(draft).username.trim(),
+      port: Number(profileProxy(draft).port) || 0
+    },
+    modules: profileModules(draft)
+  };
+}
+
+function profileModules(profile: DraftProfile): BotModulesConfig {
+  const modules = profile.modules;
+  return {
+    cactusFarm: { ...DEFAULT_MODULES_UI.cactusFarm, ...modules?.cactusFarm },
+    cropFarm: { ...DEFAULT_MODULES_UI.cropFarm, ...modules?.cropFarm },
+    area: {
+      ...DEFAULT_MODULES_UI.area,
+      ...modules?.area,
+      from: { ...DEFAULT_MODULES_UI.area.from, ...modules?.area?.from },
+      to: { ...DEFAULT_MODULES_UI.area.to, ...modules?.area?.to }
+    },
+    generator: { ...DEFAULT_MODULES_UI.generator, ...modules?.generator },
+    script: {
+      ...DEFAULT_MODULES_UI.script,
+      ...modules?.script,
+      steps: modules?.script?.steps?.length ? modules.script.steps.map((step) => ({ ...step })) : DEFAULT_MODULES_UI.script.steps,
+      quickCommands: modules?.script?.quickCommands?.length
+        ? modules.script.quickCommands.map((step) => ({ ...step }))
+        : DEFAULT_MODULES_UI.script.quickCommands
+    },
+    discord: { ...DEFAULT_MODULES_UI.discord, ...modules?.discord },
+    autoResponse: {
+      ...DEFAULT_MODULES_UI.autoResponse,
+      ...modules?.autoResponse,
+      rules: modules?.autoResponse?.rules?.length
+        ? modules.autoResponse.rules.map((rule) => ({ ...rule }))
+        : DEFAULT_MODULES_UI.autoResponse.rules.map((rule) => ({ ...rule }))
     }
   };
+}
+
+function profileProxy(profile: DraftProfile): ProxyConfig {
+  return { ...DEFAULT_PROXY_UI, ...profile.proxy };
+}
+
+function scriptStepsToText(steps: ScriptStep[]): string {
+  return steps.map((step) => `${step.label} | ${step.command} | ${step.delayMs}`).join('\n');
+}
+
+function textToScriptSteps(value: string, prefix: string): ScriptStep[] {
+  return value
+    .split('\n')
+    .map((line, index) => {
+      const [first = '', second = '', third = ''] = line.split('|').map((part) => part.trim());
+      const hasThreeColumns = Boolean(third);
+      const label = hasThreeColumns ? first : `${prefix} ${index + 1}`;
+      const command = hasThreeColumns ? second : first;
+      const delayMs = Number(hasThreeColumns ? third : second) || 0;
+      return {
+        id: `${prefix}-${index + 1}`,
+        label,
+        command,
+        delayMs
+      };
+    })
+    .filter((step) => step.command);
+}
+
+function autoResponseRulesToText(rules: AutoResponseRule[]): string {
+  return rules.map((rule) => `${rule.label} | ${rule.match} | ${rule.response} | ${rule.cooldownMs}`).join('\n');
+}
+
+function textToAutoResponseRules(value: string): AutoResponseRule[] {
+  return value
+    .split('\n')
+    .map((line, index) => {
+      const [label = '', match = '', response = '', cooldown = ''] = line.split('|').map((part) => part.trim());
+      return {
+        id: `auto-response-${index + 1}`,
+        enabled: true,
+        label: label || `Rule ${index + 1}`,
+        match,
+        response,
+        cooldownMs: Number(cooldown) || 5000
+      };
+    })
+    .filter((rule) => rule.match && rule.response);
+}
+
+function shortItemName(value: string): string {
+  const words = value.replaceAll('_', ' ').split(/\s+/).filter(Boolean);
+  if (words.length === 0) return value;
+  if (words.length === 1) return words[0].slice(0, 6);
+  return words.map((word) => word[0]?.toUpperCase() ?? '').join('').slice(0, 4);
 }
 
 function clamp(value: number, min: number, max: number, fallback: number): number {

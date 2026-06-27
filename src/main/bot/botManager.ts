@@ -1,5 +1,7 @@
 import { EventEmitter } from 'node:events';
+import net from 'node:net';
 import path from 'node:path';
+import { Vec3 } from 'vec3';
 import {
   DEFAULT_SETTINGS,
   type AccountProfile,
@@ -12,7 +14,25 @@ import {
   type SaveProfileInput,
   type SessionEvent,
   type LobbyAuthMode,
-  type StartupFlowConfig
+  type StartupFlowConfig,
+  type AreaOperationConfig,
+  type BotModulesConfig,
+  type CactusFarmConfig,
+  type CropFarmConfig,
+  type DiscordConfig,
+  type DiscordRuntimeInput,
+  type GeneratorMineConfig,
+  type InventoryItemSnapshot,
+  type LiveInventorySnapshot,
+  type OperationKind,
+  type OperationSnapshot,
+  type OperationStartRequest,
+  type PositionSnapshot,
+  type ProxyConfig,
+  type AutoResponseConfig,
+  type AutoResponseRule,
+  type ScriptConfig,
+  type ScriptStep
 } from '../../shared/types.js';
 import { AfkRoutine, type RoutineBot } from './afkRoutine.js';
 import { createDefaultProfiles } from './defaultProfiles.js';
@@ -27,9 +47,16 @@ type MineflayerOptions = {
   version?: string;
   auth?: 'microsoft' | 'offline';
   profilesFolder?: string;
+  connect?: (client: ProxyClientLike) => void;
+};
+
+type ProxyClientLike = {
+  setSocket?: (socket: net.Socket) => void;
+  emit?: (event: string, ...args: unknown[]) => boolean;
 };
 
 type InventoryItemLike = {
+  slot?: number;
   type?: number;
   name?: string;
   displayName?: string;
@@ -69,14 +96,36 @@ type BotLike = RoutineBot &
     };
     game?: { dimension?: string };
     registry?: BotRegistryLike;
-    inventory?: { slots?: unknown[]; items?: () => InventoryItemLike[] };
+    inventory?: {
+      slots?: Array<InventoryItemLike | null | undefined>;
+      items?: () => InventoryItemLike[];
+    };
+    currentWindow?: {
+      title?: unknown;
+      slots?: Array<InventoryItemLike | null | undefined>;
+    } | null;
+    quickBarSlot?: number;
+    heldItem?: InventoryItemLike | null;
     players?: Record<string, unknown>;
     player?: { ping?: number };
     equip?: (item: InventoryItemLike, destination: 'hand') => Promise<void> | void;
     consume?: () => Promise<void> | void;
+    lookAt?: (position: Vec3, force?: boolean) => Promise<void> | void;
+    blockAt?: (position: PositionSnapshot | Vec3) => BlockLike | null;
+    dig?: (block: BlockLike) => Promise<void> | void;
+    placeBlock?: (referenceBlock: BlockLike, faceVector: Vec3) => Promise<void> | void;
+    tabComplete?: (partial: string) => Promise<Array<string | { match?: string }>> | Array<string | { match?: string }>;
     quit?: (reason?: string) => void;
     respawn?: () => void;
   };
+
+type BlockLike = {
+  name?: string;
+  displayName?: string;
+  position?: PositionSnapshot;
+  boundingBox?: string;
+  metadata?: number;
+};
 
 export type MineflayerFactory = (options: MineflayerOptions) => Promise<BotLike> | BotLike;
 
@@ -84,6 +133,12 @@ interface ManagedSession {
   profile: AccountProfile;
   bot: BotLike | null;
   routine: AfkRoutine | null;
+  operationTimers: Map<OperationKind, NodeJS.Timeout>;
+  operationQueues: Map<OperationKind, OperationWorkItem[]>;
+  scriptCursor: number;
+  autoResponseCooldowns: Map<string, number>;
+  discordRuntime: DiscordRuntime;
+  discordPollTimer: NodeJS.Timeout | null;
   desiredStop: boolean;
   reconnectTimer: NodeJS.Timeout | null;
   startupTimers: NodeJS.Timeout[];
@@ -94,9 +149,110 @@ interface ManagedSession {
   snapshot: BotSessionSnapshot;
 }
 
+type OperationWorkItem = {
+  action: 'dig' | 'place';
+  position: PositionSnapshot;
+  itemName?: string;
+};
+
+interface DiscordRuntime {
+  enabled: boolean;
+  webhookUrl: string;
+  botToken: string;
+  channelId: string;
+  lastMessageId: string | null;
+}
+
 const MAX_EVENTS = 32;
 const MAX_CHAT = 64;
 const FOOD_WARNING_INTERVAL_MS = 30000;
+const DEFAULT_OPERATION_DELAY_MS = 550;
+const MAX_OPERATION_VOLUME = 4096;
+const DISCORD_API_BASE = 'https://discord.com/api/v10';
+const PLACE_BLOCK_TIMEOUT_MS = 10000;
+
+const OPERATION_LABELS: Record<OperationKind, string> = {
+  cactusFarm: 'Cactus farm',
+  cropFarm: 'Crop farm',
+  area: 'Area operation',
+  generator: 'Generator mine',
+  script: 'Script loop',
+  discord: 'Discord bridge'
+};
+
+const DEFAULT_PROXY: ProxyConfig = {
+  enabled: false,
+  type: 'socks5',
+  host: '',
+  port: 0,
+  username: '',
+  password: ''
+};
+
+const DEFAULT_MODULES: BotModulesConfig = {
+  cactusFarm: {
+    enabled: false,
+    layers: 2,
+    radius: 2,
+    placementDelayMs: 550
+  },
+  cropFarm: {
+    enabled: false,
+    crop: 'wheat',
+    radius: 4,
+    harvestDelayMs: 750,
+    replant: true,
+    collectDrops: true
+  },
+  area: {
+    enabled: false,
+    mode: 'mine',
+    from: { x: -2, y: 0, z: -2 },
+    to: { x: 2, y: 2, z: 2 },
+    fillBlock: 'cobblestone',
+    actionDelayMs: 450
+  },
+  generator: {
+    enabled: false,
+    mode: 'forward',
+    direction: 'north',
+    depth: 4,
+    actionDelayMs: 350
+  },
+  script: {
+    enabled: false,
+    loop: true,
+    steps: [
+      { id: 'script-1', label: 'Say hello', command: 'merhaba', delayMs: 1500 }
+    ],
+    quickCommands: [
+      { id: 'quick-spawn', label: 'Spawn', command: '/spawn', delayMs: 0 },
+      { id: 'quick-home', label: 'Home', command: '/home', delayMs: 0 }
+    ]
+  },
+  discord: {
+    enabled: false,
+    commandPrefix: '!ck ',
+    notifyChat: true,
+    notifyEvents: true,
+    pollCommands: false,
+    pollIntervalMs: 10000,
+    channelId: ''
+  },
+  autoResponse: {
+    enabled: false,
+    rules: [
+      {
+        id: 'auto-tpa',
+        enabled: true,
+        label: 'TPA accept',
+        match: 'tpa',
+        response: '/tpaccept',
+        cooldownMs: 5000
+      }
+    ]
+  }
+};
 
 const SAFE_FOOD_FALLBACK_SCORE: Record<string, number> = {
   golden_carrot: 14,
@@ -304,6 +460,8 @@ export class BotManager extends EventEmitter {
     session.hungerPaused = false;
     session.routine?.stop();
     session.routine = null;
+    this.stopAllOperations(session);
+    this.stopDiscordPolling(session);
     if (session.bot) {
       this.updateStatus(session, 'stopping', 'Stopping session');
       session.bot.quit?.('Stopped from ChunkKeeper');
@@ -358,6 +516,136 @@ export class BotManager extends EventEmitter {
     return this.getState();
   }
 
+  async startOperation(profileId: string, request: OperationStartRequest): Promise<LauncherState> {
+    this.assertLoaded();
+    const session = this.requireSession(profileId);
+    if (!session.bot || session.snapshot.state !== 'online') {
+      this.blockOperation(session, request.kind, 'Bot must be online before this operation can start.');
+      this.emitState();
+      return this.getState();
+    }
+
+    const modules = session.profile.modules ?? normalizeModules();
+    this.stopOperationTimer(session, request.kind);
+
+    switch (request.kind) {
+      case 'cactusFarm':
+        this.startCactusFarm(session, session.bot, normalizeCactusFarm({ ...modules.cactusFarm, ...request.config }));
+        break;
+      case 'cropFarm':
+        this.startCropFarm(session, session.bot, normalizeCropFarm({ ...modules.cropFarm, ...request.config }));
+        break;
+      case 'area':
+        this.startAreaOperation(
+          session,
+          session.bot,
+          normalizeAreaOperation({ ...modules.area, ...(request.config as Partial<AreaOperationConfig> | undefined) })
+        );
+        break;
+      case 'generator':
+        this.startGeneratorMine(
+          session,
+          session.bot,
+          normalizeGeneratorMine({ ...modules.generator, ...(request.config as Partial<GeneratorMineConfig> | undefined) })
+        );
+        break;
+      case 'script':
+        this.startScriptLoop(session, session.bot, normalizeScript({ ...modules.script, ...request.config }));
+        break;
+      case 'discord':
+        this.updateOperation(session, 'discord', 'running', 'Discord bridge armed', { total: null });
+        break;
+      default:
+        this.blockOperation(session, request.kind, 'Unsupported operation.');
+    }
+
+    this.emitState();
+    return this.getState();
+  }
+
+  async stopOperation(profileId: string, kind: OperationKind): Promise<LauncherState> {
+    this.assertLoaded();
+    const session = this.requireSession(profileId);
+    this.stopOperationTimer(session, kind);
+    session.operationQueues.delete(kind);
+    this.updateOperation(session, kind, 'idle', 'Stopped by operator', { completed: 0, total: null });
+    this.emitState();
+    return this.getState();
+  }
+
+  async runQuickScript(profileId: string, command: string): Promise<LauncherState> {
+    this.assertLoaded();
+    const session = this.requireSession(profileId);
+    const normalized = command.trim();
+    if (!normalized) return this.getState();
+    if (!session.bot || session.snapshot.state !== 'online') {
+      this.blockOperation(session, 'script', 'Quick script command requires an online bot.');
+      this.emitState();
+      return this.getState();
+    }
+    session.bot.chat?.(normalized);
+    this.pushChat(session, 'bot', normalized);
+    this.pushEvent(session, 'script', 'info', 'Quick script sent', normalized);
+    void this.notifyDiscord(session, `Quick script: ${redactSensitiveText(normalized)}`, 'event');
+    this.emitState();
+    return this.getState();
+  }
+
+  async completeChat(profileId: string, partial: string): Promise<string[]> {
+    this.assertLoaded();
+    const session = this.requireSession(profileId);
+    if (!session.bot || typeof session.bot.tabComplete !== 'function') {
+      session.snapshot.tabCompletions = [];
+      this.emitState();
+      return [];
+    }
+    try {
+      const result = await Promise.resolve(session.bot.tabComplete(partial));
+      const completions = result
+        .map((item) => (typeof item === 'string' ? item : item.match ?? ''))
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, 12);
+      session.snapshot.tabCompletions = completions;
+      this.emitState();
+      return completions;
+    } catch (error) {
+      this.pushEvent(session, 'script', 'warn', 'Tab completion failed', formatError(error));
+      session.snapshot.tabCompletions = [];
+      this.emitState();
+      return [];
+    }
+  }
+
+  async configureDiscord(profileId: string, input: DiscordRuntimeInput): Promise<LauncherState> {
+    this.assertLoaded();
+    const session = this.requireSession(profileId);
+    session.discordRuntime = {
+      enabled: Boolean(input.enabled),
+      webhookUrl: input.webhookUrl?.trim() ?? '',
+      botToken: input.botToken?.trim() ?? '',
+      channelId: input.channelId?.trim() || session.profile.modules?.discord.channelId || '',
+      lastMessageId: null
+    };
+    this.updateDiscordPolling(session);
+    this.updateOperation(
+      session,
+      'discord',
+      session.discordRuntime.enabled ? 'running' : 'idle',
+      session.discordRuntime.enabled ? 'Discord bridge configured for this runtime session' : 'Discord bridge disabled',
+      { total: null }
+    );
+    this.pushEvent(
+      session,
+      'discord',
+      session.discordRuntime.enabled ? 'ok' : 'muted',
+      session.discordRuntime.enabled ? 'Discord bridge enabled' : 'Discord bridge disabled',
+      discordRuntimeLabel(session.discordRuntime)
+    );
+    this.emitState();
+    return this.getState();
+  }
+
   private async persist(): Promise<void> {
     const store = this.options.store ?? new ProfileStore(this.options.userDataDir);
     await store.save({
@@ -378,6 +666,18 @@ export class BotManager extends EventEmitter {
         profile,
         bot: null,
         routine: null,
+        operationTimers: new Map(),
+        operationQueues: new Map(),
+        scriptCursor: 0,
+        autoResponseCooldowns: new Map(),
+        discordRuntime: {
+          enabled: false,
+          webhookUrl: '',
+          botToken: '',
+          channelId: '',
+          lastMessageId: null
+        },
+        discordPollTimer: null,
         desiredStop: true,
         reconnectTimer: null,
         startupTimers: [],
@@ -397,13 +697,15 @@ export class BotManager extends EventEmitter {
 
   private async createBot(profile: AccountProfile): Promise<BotLike> {
     const factory = this.options.factory ?? defaultMineflayerFactory;
+    const proxyConnector = profile.proxy?.enabled ? createProxyConnector(profile.proxy, profile.host, profile.port) : undefined;
     const bot = await factory({
       host: profile.host,
       port: profile.port,
       username: profile.username,
       version: profile.version || undefined,
       auth: profile.authMode,
-      profilesFolder: this.authSessionDir()
+      profilesFolder: this.authSessionDir(),
+      ...(proxyConnector ? { connect: proxyConnector } : {})
     });
     installResourcePackAutoAccept(bot);
     return bot;
@@ -420,6 +722,7 @@ export class BotManager extends EventEmitter {
       }
       this.pushEvent(session, 'system', 'ok', 'Joined server', session.profile.host);
       this.updateLiveTelemetry(session);
+      void this.notifyDiscord(session, `${session.profile.label} joined ${session.profile.host}`, 'event');
       void this.handleFoodGuard(session, bot);
       if (shouldRunStartup) {
         this.runStartupFlow(session, bot);
@@ -429,6 +732,9 @@ export class BotManager extends EventEmitter {
 
     bot.on('health', () => {
       this.updateLiveTelemetry(session);
+      if (typeof bot.health === 'number' && bot.health <= 8) {
+        void this.notifyDiscord(session, `${session.profile.label} health is ${bot.health}/20`, 'event');
+      }
       void this.handleFoodGuard(session, bot);
       this.emitState();
     });
@@ -437,13 +743,38 @@ export class BotManager extends EventEmitter {
       this.updateLiveTelemetry(session);
     });
 
+    bot.on('windowOpen', () => {
+      this.updateLiveTelemetry(session);
+      this.pushEvent(session, 'inventory', 'info', 'Window opened', session.snapshot.inventory.openWindowTitle ?? undefined);
+      this.emitState();
+    });
+
+    bot.on('windowClose', () => {
+      this.updateLiveTelemetry(session);
+      this.pushEvent(session, 'inventory', 'muted', 'Window closed');
+      this.emitState();
+    });
+
+    bot.on('heldItemChanged', () => {
+      this.updateLiveTelemetry(session);
+      this.emitState();
+    });
+
+    bot.on('inventoryUpdate', () => {
+      this.updateLiveTelemetry(session);
+      this.emitState();
+    });
+
     bot.on('messagestr', (message: string) => {
       this.pushChat(session, 'server', message);
+      void this.notifyDiscord(session, message, 'chat');
       this.emitState();
     });
 
     bot.on('chat', (username: string, message: string) => {
       this.pushChat(session, 'server', `<${username}> ${message}`);
+      void this.notifyDiscord(session, `<${username}> ${message}`, 'chat');
+      this.handleAutoResponse(session, username, message);
       this.emitState();
     });
 
@@ -464,6 +795,7 @@ export class BotManager extends EventEmitter {
       session.snapshot.lastError = detail;
       this.updateStatus(session, 'warning', 'Kicked');
       this.pushEvent(session, 'kick', 'warn', 'Kicked', detail);
+      void this.notifyDiscord(session, `${session.profile.label} kicked: ${detail}`, 'event');
       this.emitState();
     });
 
@@ -472,12 +804,15 @@ export class BotManager extends EventEmitter {
       session.snapshot.lastError = message;
       this.updateStatus(session, 'error', 'Bot error');
       this.pushEvent(session, 'error', 'danger', 'Bot error', message);
+      void this.notifyDiscord(session, `${session.profile.label} error: ${message}`, 'event');
       this.emitState();
     });
 
     bot.on('end', () => {
       session.routine?.stop();
       session.routine = null;
+      this.stopAllOperations(session);
+      this.stopDiscordPolling(session);
       this.clearStartupFlow(session);
       session.startupCompleted = false;
       session.foodGuardActive = false;
@@ -492,6 +827,7 @@ export class BotManager extends EventEmitter {
         this.updateStatus(session, 'reconnecting', 'Disconnected');
         this.scheduleReconnect(session);
       }
+      void this.notifyDiscord(session, `${session.profile.label} disconnected`, 'event');
       this.emitState();
     });
   }
@@ -721,6 +1057,439 @@ export class BotManager extends EventEmitter {
     session.snapshot.nextReconnectAt = null;
   }
 
+  private startCactusFarm(session: ManagedSession, bot: BotLike, config: CactusFarmConfig): void {
+    const origin = botPosition(bot);
+    if (!origin) {
+      this.blockOperation(session, 'cactusFarm', 'Bot position is unavailable.');
+      return;
+    }
+    const plan = cactusPlan(origin, config);
+    const sandNeeded = plan.filter((item) => item.itemName === 'sand').length;
+    const cactusNeeded = plan.filter((item) => item.itemName === 'cactus').length;
+    const sandCount = inventoryItemCount(bot, 'sand');
+    const cactusCount = inventoryItemCount(bot, 'cactus');
+    if (sandCount < sandNeeded || cactusCount < cactusNeeded) {
+      this.blockOperation(
+        session,
+        'cactusFarm',
+        `Missing materials: sand ${sandCount}/${sandNeeded}, cactus ${cactusCount}/${cactusNeeded}.`
+      );
+      return;
+    }
+    session.operationQueues.set('cactusFarm', plan);
+    this.updateOperation(session, 'cactusFarm', 'running', `Building ${config.layers} layer cactus farm`, {
+      completed: 0,
+      total: plan.length,
+      stats: { sandNeeded, cactusNeeded }
+    });
+    this.scheduleOperationQueue(session, bot, 'cactusFarm', config.placementDelayMs);
+  }
+
+  private startCropFarm(session: ManagedSession, bot: BotLike, config: CropFarmConfig): void {
+    this.updateOperation(session, 'cropFarm', 'running', `${cropLabel(config.crop)} farm loop active`, {
+      total: null,
+      stats: { harvested: 0, replanted: 0, collected: 0 }
+    });
+    const tick = () => {
+      if (session.bot !== bot || session.snapshot.operations.cropFarm.state !== 'running') return;
+      const origin = botPosition(bot);
+      if (!origin) {
+        this.blockOperation(session, 'cropFarm', 'Bot position is unavailable.');
+        return;
+      }
+      void this.runCropFarmTick(session, bot, config, origin).finally(() => {
+        if (session.snapshot.operations.cropFarm.state === 'running') {
+          const timer = setTimeout(tick, config.harvestDelayMs);
+          session.operationTimers.set('cropFarm', timer);
+        }
+      });
+    };
+    tick();
+  }
+
+  private async runCropFarmTick(
+    session: ManagedSession,
+    bot: BotLike,
+    config: CropFarmConfig,
+    origin: PositionSnapshot
+  ): Promise<void> {
+    if (typeof bot.blockAt !== 'function' || typeof bot.dig !== 'function') {
+      this.blockOperation(session, 'cropFarm', 'Mineflayer block/dig APIs are unavailable.');
+      return;
+    }
+    let harvested = 0;
+    let replanted = 0;
+    for (const position of positionsInBox(
+      addPosition(origin, { x: -config.radius, y: -1, z: -config.radius }),
+      addPosition(origin, { x: config.radius, y: 2, z: config.radius })
+    )) {
+      const block = bot.blockAt(toVec3(position));
+      if (!block || !isMatureCrop(block, config.crop)) continue;
+      await Promise.resolve(bot.dig(block));
+      harvested += 1;
+      if (config.replant && cropSeedName(config.crop) && inventoryItemCount(bot, cropSeedName(config.crop)) > 0) {
+        const placed = await this.placeItemAt(bot, cropSeedName(config.crop), position);
+        if (placed) replanted += 1;
+      }
+    }
+    if (harvested > 0 || replanted > 0) {
+      this.addOperationStats(session, 'cropFarm', { harvested, replanted, collected: config.collectDrops ? harvested : 0 });
+      this.pushEvent(session, 'farm', 'ok', 'Crop farm tick', `${harvested} harvested, ${replanted} replanted`);
+      this.updateLiveTelemetry(session);
+      this.emitState();
+    }
+  }
+
+  private startAreaOperation(session: ManagedSession, bot: BotLike, config: AreaOperationConfig): void {
+    const origin = botPosition(bot);
+    if (!origin) {
+      this.blockOperation(session, 'area', 'Bot position is unavailable.');
+      return;
+    }
+    const from = addPosition(origin, config.from);
+    const to = addPosition(origin, config.to);
+    const positions = positionsInBox(from, to);
+    if (positions.length > MAX_OPERATION_VOLUME) {
+      this.blockOperation(session, 'area', `Area is too large: ${positions.length}/${MAX_OPERATION_VOLUME} blocks.`);
+      return;
+    }
+    const work: OperationWorkItem[] = positions.map((position) => ({
+      action: config.mode === 'fill' ? 'place' : 'dig',
+      position,
+      itemName: config.mode === 'fill' ? config.fillBlock : undefined
+    }));
+    session.operationQueues.set('area', work);
+    this.updateOperation(session, 'area', 'running', `${config.mode === 'fill' ? 'Filling' : 'Mining'} selected 3D area`, {
+      completed: 0,
+      total: work.length,
+      stats: { blocks: work.length }
+    });
+    this.scheduleOperationQueue(session, bot, 'area', config.actionDelayMs);
+  }
+
+  private startGeneratorMine(session: ManagedSession, bot: BotLike, config: GeneratorMineConfig): void {
+    const origin = botPosition(bot);
+    if (!origin) {
+      this.blockOperation(session, 'generator', 'Bot position is unavailable.');
+      return;
+    }
+    const directions = config.mode === 'four_way' ? (['north', 'south', 'east', 'west'] as const) : [config.direction];
+    const work: OperationWorkItem[] = directions.flatMap((direction) => {
+      const vector = directionVector(direction);
+      return Array.from({ length: config.depth }, (_, index) => ({
+        action: 'dig' as const,
+        position: addPosition(origin, scalePosition(vector, index + 1))
+      }));
+    });
+    session.operationQueues.set('generator', work);
+    this.updateOperation(session, 'generator', 'running', `${config.mode === 'four_way' ? '4-way' : config.direction} generator mining`, {
+      completed: 0,
+      total: work.length,
+      stats: { targets: work.length }
+    });
+    this.scheduleOperationQueue(session, bot, 'generator', config.actionDelayMs);
+  }
+
+  private startScriptLoop(session: ManagedSession, bot: BotLike, config: ScriptConfig): void {
+    if (config.steps.length === 0) {
+      this.blockOperation(session, 'script', 'Script has no commands.');
+      return;
+    }
+    session.scriptCursor = 0;
+    this.updateOperation(session, 'script', 'running', config.loop ? 'Looping script' : 'Running script once', {
+      completed: 0,
+      total: config.loop ? null : config.steps.length,
+      stats: { sent: 0 }
+    });
+
+    const tick = () => {
+      if (session.bot !== bot || session.snapshot.operations.script.state !== 'running') return;
+      const step = config.steps[session.scriptCursor];
+      if (!step) {
+        this.stopOperationTimer(session, 'script');
+        this.updateOperation(session, 'script', 'complete', 'Script complete', { total: config.steps.length });
+        this.emitState();
+        return;
+      }
+      bot.chat?.(step.command);
+      this.pushChat(session, 'bot', step.command);
+      this.pushEvent(session, 'script', 'info', step.label, redactSensitiveText(step.command));
+      this.addOperationStats(session, 'script', { sent: 1 });
+      session.scriptCursor += 1;
+      if (session.scriptCursor >= config.steps.length) {
+        if (config.loop) {
+          session.scriptCursor = 0;
+        } else {
+          this.stopOperationTimer(session, 'script');
+          this.updateOperation(session, 'script', 'complete', 'Script complete', { total: config.steps.length });
+          this.emitState();
+          return;
+        }
+      }
+      const nextStep = config.steps[session.scriptCursor] ?? config.steps[0];
+      const timer = setTimeout(tick, Math.max(0, nextStep.delayMs));
+      session.operationTimers.set('script', timer);
+      this.emitState();
+    };
+
+    const firstStep = config.steps[0];
+    const timer = setTimeout(tick, Math.max(0, firstStep.delayMs));
+    session.operationTimers.set('script', timer);
+  }
+
+  private handleAutoResponse(session: ManagedSession, username: string, message: string): void {
+    const bot = session.bot;
+    const config = normalizeAutoResponse(session.profile.modules?.autoResponse);
+    if (!bot || !config.enabled || typeof bot.chat !== 'function') return;
+    if (bot.username && username === bot.username) return;
+
+    const normalizedMessage = message.toLocaleLowerCase();
+    const now = Date.now();
+    for (const rule of config.rules) {
+      if (!rule.enabled || !rule.match || !rule.response) continue;
+      if (!normalizedMessage.includes(rule.match.toLocaleLowerCase())) continue;
+      const lastSentAt = session.autoResponseCooldowns.get(rule.id) ?? 0;
+      if (now - lastSentAt < rule.cooldownMs) {
+        this.pushEvent(session, 'autoReply', 'muted', 'Auto response cooled down', rule.label);
+        return;
+      }
+      session.autoResponseCooldowns.set(rule.id, now);
+      bot.chat(rule.response);
+      this.pushChat(session, 'bot', rule.response);
+      this.pushEvent(session, 'autoReply', 'ok', 'Auto response sent', `${rule.label}: ${redactSensitiveText(rule.response)}`);
+      void this.notifyDiscord(session, `Auto response ${rule.label}: ${redactSensitiveText(rule.response)}`, 'event');
+      return;
+    }
+  }
+
+  private scheduleOperationQueue(
+    session: ManagedSession,
+    bot: BotLike,
+    kind: Extract<OperationKind, 'cactusFarm' | 'area' | 'generator'>,
+    delayMs: number
+  ): void {
+    const tick = () => {
+      if (session.bot !== bot || session.snapshot.operations[kind].state !== 'running') return;
+      const queue = session.operationQueues.get(kind) ?? [];
+      const work = queue.shift();
+      if (!work) {
+        this.stopOperationTimer(session, kind);
+        this.updateOperation(session, kind, 'complete', `${OPERATION_LABELS[kind]} complete`, {
+          total: session.snapshot.operations[kind].total
+        });
+        this.emitState();
+        return;
+      }
+      void this.runWorkItem(session, bot, kind, work).finally(() => {
+        if (session.snapshot.operations[kind].state === 'running') {
+          const timer = setTimeout(tick, delayMs);
+          session.operationTimers.set(kind, timer);
+        }
+      });
+    };
+    tick();
+  }
+
+  private async runWorkItem(
+    session: ManagedSession,
+    bot: BotLike,
+    kind: OperationKind,
+    work: OperationWorkItem
+  ): Promise<void> {
+    try {
+      if (work.action === 'dig') {
+        if (typeof bot.blockAt !== 'function' || typeof bot.dig !== 'function') {
+          this.blockOperation(session, kind, 'Mineflayer block/dig APIs are unavailable.');
+          return;
+        }
+        const block = bot.blockAt(toVec3(work.position));
+        if (!block || isAirBlock(block)) {
+          this.addOperationProgress(session, kind, 1, { skipped: 1 });
+          return;
+        }
+        await Promise.resolve(bot.dig(block));
+        this.addOperationProgress(session, kind, 1, { mined: 1 });
+      } else {
+        const placed = await this.placeItemAt(bot, work.itemName ?? 'cobblestone', work.position);
+        if (!placed) {
+          this.blockOperation(session, kind, `Cannot place ${work.itemName ?? 'block'} at ${formatPosition(work.position)}.`);
+          return;
+        }
+        this.addOperationProgress(session, kind, 1, { placed: 1 });
+      }
+      this.updateLiveTelemetry(session);
+      this.emitState();
+    } catch (error) {
+      this.blockOperation(session, kind, formatError(error), 'error');
+      this.emitState();
+    }
+  }
+
+  private async placeItemAt(bot: BotLike, itemName: string, position: PositionSnapshot): Promise<boolean> {
+    if (typeof bot.blockAt !== 'function' || typeof bot.placeBlock !== 'function' || typeof bot.equip !== 'function') return false;
+    const item = findInventoryItem(bot, itemName);
+    if (!item) return false;
+    const referenceBlock = bot.blockAt(toVec3(addPosition(position, { x: 0, y: -1, z: 0 })));
+    if (!referenceBlock || isAirBlock(referenceBlock)) return false;
+    await Promise.resolve(bot.equip(item, 'hand'));
+    await withTimeout(
+      Promise.resolve(bot.placeBlock(referenceBlock, new Vec3(0, 1, 0))),
+      PLACE_BLOCK_TIMEOUT_MS,
+      `place ${itemName}`
+    );
+    return true;
+  }
+
+  private stopAllOperations(session: ManagedSession): void {
+    for (const kind of Object.keys(session.snapshot.operations) as OperationKind[]) {
+      this.stopOperationTimer(session, kind);
+      session.operationQueues.delete(kind);
+      if (session.snapshot.operations[kind].state === 'running') {
+        this.updateOperation(session, kind, 'idle', 'Stopped');
+      }
+    }
+  }
+
+  private stopOperationTimer(session: ManagedSession, kind: OperationKind): void {
+    const timer = session.operationTimers.get(kind);
+    if (timer) clearTimeout(timer);
+    session.operationTimers.delete(kind);
+  }
+
+  private blockOperation(
+    session: ManagedSession,
+    kind: OperationKind,
+    detail: string,
+    state: OperationSnapshot['state'] = 'blocked'
+  ): void {
+    this.stopOperationTimer(session, kind);
+    session.operationQueues.delete(kind);
+    this.updateOperation(session, kind, state, detail, { total: session.snapshot.operations[kind].total });
+    this.pushEvent(session, operationEventType(kind), state === 'error' ? 'danger' : 'warn', `${OPERATION_LABELS[kind]} blocked`, detail);
+  }
+
+  private updateOperation(
+    session: ManagedSession,
+    kind: OperationKind,
+    state: OperationSnapshot['state'],
+    detail: string | null,
+    patch: Partial<Pick<OperationSnapshot, 'completed' | 'total' | 'stats'>> = {}
+  ): void {
+    const existing = session.snapshot.operations[kind] ?? createOperationSnapshot(kind);
+    const now = new Date().toISOString();
+    session.snapshot.operations[kind] = {
+      ...existing,
+      state,
+      detail,
+      startedAt: state === 'running' && existing.state !== 'running' ? now : existing.startedAt,
+      updatedAt: now,
+      completed: patch.completed ?? existing.completed,
+      total: patch.total === undefined ? existing.total : patch.total,
+      stats: patch.stats ? { ...patch.stats } : existing.stats
+    };
+  }
+
+  private addOperationProgress(
+    session: ManagedSession,
+    kind: OperationKind,
+    completedDelta: number,
+    statsDelta: Record<string, number>
+  ): void {
+    const existing = session.snapshot.operations[kind];
+    this.updateOperation(session, kind, existing.state, existing.detail, {
+      completed: existing.completed + completedDelta,
+      total: existing.total,
+      stats: mergeStats(existing.stats, statsDelta)
+    });
+  }
+
+  private addOperationStats(session: ManagedSession, kind: OperationKind, statsDelta: Record<string, number>): void {
+    const existing = session.snapshot.operations[kind];
+    this.updateOperation(session, kind, existing.state, existing.detail, {
+      completed: existing.completed,
+      total: existing.total,
+      stats: mergeStats(existing.stats, statsDelta)
+    });
+  }
+
+  private updateDiscordPolling(session: ManagedSession): void {
+    this.stopDiscordPolling(session);
+    const config = session.profile.modules?.discord ?? normalizeDiscord();
+    const runtime = session.discordRuntime;
+    const shouldPoll = runtime.enabled && config.pollCommands && runtime.botToken && runtime.channelId;
+    if (!shouldPoll) return;
+
+    const poll = () => {
+      void this.pollDiscordCommands(session).finally(() => {
+        if (session.discordRuntime.enabled && config.pollCommands) {
+          session.discordPollTimer = setTimeout(poll, config.pollIntervalMs);
+        }
+      });
+    };
+    session.discordPollTimer = setTimeout(poll, config.pollIntervalMs);
+  }
+
+  private stopDiscordPolling(session: ManagedSession): void {
+    if (session.discordPollTimer) {
+      clearTimeout(session.discordPollTimer);
+      session.discordPollTimer = null;
+    }
+  }
+
+  private async pollDiscordCommands(session: ManagedSession): Promise<void> {
+    const config = session.profile.modules?.discord ?? normalizeDiscord();
+    const runtime = session.discordRuntime;
+    if (!runtime.enabled || !runtime.botToken || !runtime.channelId || !session.bot) return;
+    const url = new URL(`${DISCORD_API_BASE}/channels/${encodeURIComponent(runtime.channelId)}/messages`);
+    url.searchParams.set('limit', '10');
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bot ${runtime.botToken}`,
+        Accept: 'application/json'
+      }
+    });
+    if (!response.ok) {
+      this.blockOperation(session, 'discord', `Discord command poll failed: HTTP ${response.status}`, 'error');
+      return;
+    }
+    const messages = (await response.json()) as Array<{ id: string; content?: string; author?: { bot?: boolean } }>;
+    const sorted = [...messages].sort((a, b) => a.id.localeCompare(b.id));
+    for (const message of sorted) {
+      if (runtime.lastMessageId && message.id <= runtime.lastMessageId) continue;
+      runtime.lastMessageId = message.id;
+      const content = message.content?.trim() ?? '';
+      if (!content.startsWith(config.commandPrefix) || message.author?.bot) continue;
+      const command = content.slice(config.commandPrefix.length).trim();
+      if (!command) continue;
+      session.bot.chat?.(command);
+      this.pushChat(session, 'bot', command);
+      this.pushEvent(session, 'discord', 'ok', 'Discord command sent', redactSensitiveText(command));
+      this.addOperationStats(session, 'discord', { commands: 1 });
+    }
+    this.emitState();
+  }
+
+  private async notifyDiscord(session: ManagedSession, message: string, source: 'chat' | 'event'): Promise<void> {
+    const config = session.profile.modules?.discord ?? normalizeDiscord();
+    const runtime = session.discordRuntime;
+    if (!runtime.enabled || !runtime.webhookUrl) return;
+    if (source === 'chat' && !config.notifyChat) return;
+    if (source === 'event' && !config.notifyEvents) return;
+    try {
+      await fetch(runtime.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: 'ChunkKeeper',
+          content: `[${session.profile.label}] ${redactSensitiveText(message)}`.slice(0, 1900)
+        })
+      });
+      this.addOperationStats(session, 'discord', { notifications: 1 });
+    } catch (error) {
+      this.pushEvent(session, 'discord', 'warn', 'Discord notify failed', formatError(error));
+    }
+  }
+
   private updateLiveTelemetry(session: ManagedSession): void {
     const bot = session.bot;
     if (!bot) return;
@@ -742,6 +1511,7 @@ export class BotManager extends EventEmitter {
     const used = bot.inventory?.items?.().length ?? null;
     session.snapshot.inventoryUsed = used;
     session.snapshot.inventorySize = bot.inventory?.slots?.length ?? session.snapshot.inventorySize ?? 46;
+    session.snapshot.inventory = captureInventory(bot);
   }
 
   private updateStatus(session: ManagedSession, state: BotSessionSnapshot['state'], statusMessage: string): void {
@@ -811,6 +1581,9 @@ export class BotManager extends EventEmitter {
     return {
       ...snapshot,
       position: snapshot.position ? { ...snapshot.position } : null,
+      inventory: cloneInventorySnapshot(snapshot.inventory),
+      operations: cloneOperations(snapshot.operations),
+      tabCompletions: [...snapshot.tabCompletions],
       events: snapshot.events.map((event) => ({ ...event })),
       chat: snapshot.chat.map((line) => ({ ...line }))
     };
@@ -834,6 +1607,96 @@ async function defaultMineflayerFactory(options: MineflayerOptions): Promise<Bot
     throw new Error('mineflayer createBot() was not found');
   }
   return createBot(options) as unknown as BotLike;
+}
+
+function createProxyConnector(proxy: ProxyConfig, destinationHost: string, destinationPort: number): (client: ProxyClientLike) => void {
+  return (client) => {
+    void connectThroughProxy(proxy, destinationHost, destinationPort)
+      .then((socket) => {
+        client.setSocket?.(socket);
+        client.emit?.('connect');
+      })
+      .catch((error) => {
+        client.emit?.('error', error);
+      });
+  };
+}
+
+async function connectThroughProxy(proxy: ProxyConfig, destinationHost: string, destinationPort: number): Promise<net.Socket> {
+  if (proxy.type === 'socks4' || proxy.type === 'socks5') {
+    const socksModule = await import('socks');
+    const { socket } = await socksModule.SocksClient.createConnection({
+      command: 'connect',
+      destination: {
+        host: destinationHost,
+        port: destinationPort
+      },
+      proxy: {
+        host: proxy.host,
+        port: proxy.port,
+        type: proxy.type === 'socks4' ? 4 : 5,
+        userId: proxy.username || undefined,
+        password: proxy.password || undefined
+      }
+    });
+    return socket;
+  }
+  return connectHttpProxy(proxy, destinationHost, destinationPort);
+}
+
+function connectHttpProxy(proxy: ProxyConfig, destinationHost: string, destinationPort: number): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(proxy.port, proxy.host);
+    const chunks: Buffer[] = [];
+    let settled = false;
+
+    const cleanup = () => {
+      socket.off('data', onData);
+      socket.off('error', onError);
+      socket.off('connect', onConnect);
+    };
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      socket.destroy();
+      reject(error);
+    };
+
+    const onError = (error: Error) => fail(error);
+    const onConnect = () => {
+      const auth =
+        proxy.username || proxy.password
+          ? `Proxy-Authorization: Basic ${Buffer.from(`${proxy.username}:${proxy.password}`).toString('base64')}\r\n`
+          : '';
+      socket.write(
+        `CONNECT ${destinationHost}:${destinationPort} HTTP/1.1\r\nHost: ${destinationHost}:${destinationPort}\r\n${auth}\r\n`
+      );
+    };
+    const onData = (chunk: Buffer) => {
+      chunks.push(chunk);
+      const raw = Buffer.concat(chunks);
+      const boundary = raw.indexOf('\r\n\r\n');
+      if (boundary < 0) return;
+
+      const header = raw.slice(0, boundary).toString('utf8');
+      if (!/^HTTP\/\d(?:\.\d)? 2\d\d\b/.test(header)) {
+        fail(new Error(`HTTP proxy CONNECT failed: ${header.split('\r\n')[0] ?? 'unknown response'}`));
+        return;
+      }
+
+      const rest = raw.slice(boundary + 4);
+      if (rest.length > 0) socket.unshift(rest);
+      settled = true;
+      cleanup();
+      resolve(socket);
+    };
+
+    socket.on('connect', onConnect);
+    socket.on('data', onData);
+    socket.on('error', onError);
+  });
 }
 
 function installResourcePackAutoAccept(bot: BotLike): void {
@@ -865,9 +1728,12 @@ function createSessionSnapshot(profileId: string): BotSessionSnapshot {
     dimension: null,
     inventoryUsed: null,
     inventorySize: null,
+    inventory: emptyInventorySnapshot(),
     playersOnline: null,
     startupActive: false,
     routineActive: false,
+    operations: createOperationSnapshots(),
+    tabCompletions: [],
     connectedAt: null,
     nextReconnectAt: null,
     lastError: null,
@@ -893,12 +1759,88 @@ function createSessionSnapshot(profileId: string): BotSessionSnapshot {
   };
 }
 
+function emptyInventorySnapshot(): LiveInventorySnapshot {
+  return {
+    updatedAt: null,
+    heldItem: null,
+    armor: [],
+    crafting: [],
+    storage: [],
+    slots: [],
+    openWindowTitle: null
+  };
+}
+
+function createOperationSnapshots(): Record<OperationKind, OperationSnapshot> {
+  return {
+    cactusFarm: createOperationSnapshot('cactusFarm'),
+    cropFarm: createOperationSnapshot('cropFarm'),
+    area: createOperationSnapshot('area'),
+    generator: createOperationSnapshot('generator'),
+    script: createOperationSnapshot('script'),
+    discord: createOperationSnapshot('discord')
+  };
+}
+
+function createOperationSnapshot(kind: OperationKind): OperationSnapshot {
+  return {
+    kind,
+    state: 'idle',
+    label: OPERATION_LABELS[kind],
+    detail: null,
+    startedAt: null,
+    updatedAt: null,
+    completed: 0,
+    total: null,
+    stats: {}
+  };
+}
+
+function cloneInventorySnapshot(snapshot: LiveInventorySnapshot): LiveInventorySnapshot {
+  return {
+    updatedAt: snapshot.updatedAt,
+    heldItem: snapshot.heldItem ? { ...snapshot.heldItem } : null,
+    armor: snapshot.armor.map((item) => ({ ...item })),
+    crafting: snapshot.crafting.map((item) => ({ ...item })),
+    storage: snapshot.storage.map((item) => ({ ...item })),
+    slots: snapshot.slots.map((item) => ({ ...item })),
+    openWindowTitle: snapshot.openWindowTitle
+  };
+}
+
+function cloneOperations(operations: Record<OperationKind, OperationSnapshot>): Record<OperationKind, OperationSnapshot> {
+  return {
+    cactusFarm: cloneOperation(operations.cactusFarm),
+    cropFarm: cloneOperation(operations.cropFarm),
+    area: cloneOperation(operations.area),
+    generator: cloneOperation(operations.generator),
+    script: cloneOperation(operations.script),
+    discord: cloneOperation(operations.discord)
+  };
+}
+
+function cloneOperation(operation: OperationSnapshot): OperationSnapshot {
+  return {
+    ...operation,
+    stats: { ...operation.stats }
+  };
+}
+
 function round(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise
+      .then(resolve, reject)
+      .finally(() => clearTimeout(timer));
+  });
 }
 
 function cloneSettings(settings: AppSettings): AppSettings {
@@ -995,7 +1937,9 @@ function cloneProfile(profile: AccountProfile): AccountProfile {
     ...profile,
     startup: { ...profile.startup },
     routine: { ...profile.routine, chatMessages: [...profile.routine.chatMessages] },
-    reconnect: { ...profile.reconnect }
+    reconnect: { ...profile.reconnect },
+    proxy: profile.proxy ? { ...profile.proxy } : normalizeProxy(),
+    modules: cloneModules(profile.modules ?? normalizeModules())
   };
 }
 
@@ -1005,7 +1949,9 @@ function profileForPersistence(profile: AccountProfile): AccountProfile {
     startup: {
       ...profile.startup,
       authPassword: ''
-    }
+    },
+    proxy: profile.proxy ? { ...profile.proxy, password: '' } : normalizeProxy(),
+    modules: profile.modules ? stripModuleSecrets(profile.modules) : normalizeModules()
   };
 }
 
@@ -1019,7 +1965,184 @@ function normalizeProfile(profile: AccountProfile): AccountProfile {
       maxAttempts: Math.max(0, Number(profile.reconnect?.maxAttempts) || 0),
       baseDelayMs: Math.max(1000, Number(profile.reconnect?.baseDelayMs) || 5000),
       maxDelayMs: Math.max(1000, Number(profile.reconnect?.maxDelayMs) || 90000)
+    },
+    proxy: normalizeProxy(profile.proxy),
+    modules: normalizeModules(profile.modules)
+  };
+}
+
+function normalizeProxy(proxy?: Partial<ProxyConfig>): ProxyConfig {
+  const type = proxy?.type;
+  return {
+    enabled: Boolean(proxy?.enabled),
+    type: type === 'socks4' || type === 'socks5' || type === 'http' || type === 'https' ? type : DEFAULT_PROXY.type,
+    host: proxy?.host?.trim() ?? '',
+    port: clamp(Number(proxy?.port), 0, 65535, 0),
+    username: proxy?.username?.trim() ?? '',
+    password: proxy?.password ?? ''
+  };
+}
+
+function normalizeModules(modules?: Partial<BotModulesConfig>): BotModulesConfig {
+  return {
+    cactusFarm: normalizeCactusFarm(modules?.cactusFarm),
+    cropFarm: normalizeCropFarm(modules?.cropFarm),
+    area: normalizeAreaOperation(modules?.area),
+    generator: normalizeGeneratorMine(modules?.generator),
+    script: normalizeScript(modules?.script),
+    discord: normalizeDiscord(modules?.discord),
+    autoResponse: normalizeAutoResponse(modules?.autoResponse)
+  };
+}
+
+function cloneModules(modules: BotModulesConfig): BotModulesConfig {
+  return {
+    cactusFarm: { ...modules.cactusFarm },
+    cropFarm: { ...modules.cropFarm },
+    area: {
+      ...modules.area,
+      from: { ...modules.area.from },
+      to: { ...modules.area.to }
+    },
+    generator: { ...modules.generator },
+    script: {
+      ...modules.script,
+      steps: modules.script.steps.map((step) => ({ ...step })),
+      quickCommands: modules.script.quickCommands.map((step) => ({ ...step }))
+    },
+    discord: { ...modules.discord },
+    autoResponse: {
+      ...modules.autoResponse,
+      rules: modules.autoResponse.rules.map((rule) => ({ ...rule }))
     }
+  };
+}
+
+function stripModuleSecrets(modules: BotModulesConfig): BotModulesConfig {
+  return cloneModules(normalizeModules(modules));
+}
+
+function normalizeCactusFarm(config?: Partial<CactusFarmConfig>): CactusFarmConfig {
+  return {
+    enabled: Boolean(config?.enabled),
+    layers: clamp(Number(config?.layers), 1, 12, DEFAULT_MODULES.cactusFarm.layers),
+    radius: clamp(Number(config?.radius), 1, 8, DEFAULT_MODULES.cactusFarm.radius),
+    placementDelayMs: clamp(
+      Number(config?.placementDelayMs),
+      100,
+      10000,
+      DEFAULT_MODULES.cactusFarm.placementDelayMs
+    )
+  };
+}
+
+function normalizeCropFarm(config?: Partial<CropFarmConfig>): CropFarmConfig {
+  const crop = config?.crop;
+  return {
+    enabled: Boolean(config?.enabled),
+    crop:
+      crop === 'wheat' ||
+      crop === 'carrot' ||
+      crop === 'potato' ||
+      crop === 'beetroot' ||
+      crop === 'nether_wart' ||
+      crop === 'pumpkin' ||
+      crop === 'melon'
+        ? crop
+        : DEFAULT_MODULES.cropFarm.crop,
+    radius: clamp(Number(config?.radius), 1, 12, DEFAULT_MODULES.cropFarm.radius),
+    harvestDelayMs: clamp(Number(config?.harvestDelayMs), 100, 30000, DEFAULT_MODULES.cropFarm.harvestDelayMs),
+    replant: config?.replant ?? DEFAULT_MODULES.cropFarm.replant,
+    collectDrops: config?.collectDrops ?? DEFAULT_MODULES.cropFarm.collectDrops
+  };
+}
+
+function normalizeAreaOperation(config?: Partial<AreaOperationConfig>): AreaOperationConfig {
+  const mode = config?.mode === 'fill' ? 'fill' : 'mine';
+  return {
+    enabled: Boolean(config?.enabled),
+    mode,
+    from: normalizePosition(config?.from, DEFAULT_MODULES.area.from),
+    to: normalizePosition(config?.to, DEFAULT_MODULES.area.to),
+    fillBlock: config?.fillBlock?.trim() || DEFAULT_MODULES.area.fillBlock,
+    actionDelayMs: clamp(Number(config?.actionDelayMs), 100, 30000, DEFAULT_MODULES.area.actionDelayMs)
+  };
+}
+
+function normalizeGeneratorMine(config?: Partial<GeneratorMineConfig>): GeneratorMineConfig {
+  const direction = config?.direction;
+  return {
+    enabled: Boolean(config?.enabled),
+    mode: config?.mode === 'four_way' ? 'four_way' : 'forward',
+    direction:
+      direction === 'north' || direction === 'south' || direction === 'east' || direction === 'west'
+        ? direction
+        : DEFAULT_MODULES.generator.direction,
+    depth: clamp(Number(config?.depth), 1, 64, DEFAULT_MODULES.generator.depth),
+    actionDelayMs: clamp(Number(config?.actionDelayMs), 100, 30000, DEFAULT_MODULES.generator.actionDelayMs)
+  };
+}
+
+function normalizeScript(config?: Partial<ScriptConfig>): ScriptConfig {
+  return {
+    enabled: Boolean(config?.enabled),
+    loop: config?.loop ?? DEFAULT_MODULES.script.loop,
+    steps: normalizeScriptSteps(config?.steps, DEFAULT_MODULES.script.steps),
+    quickCommands: normalizeScriptSteps(config?.quickCommands, DEFAULT_MODULES.script.quickCommands)
+  };
+}
+
+function normalizeScriptSteps(steps: ScriptStep[] | undefined, fallback: ScriptStep[]): ScriptStep[] {
+  const source = Array.isArray(steps) && steps.length > 0 ? steps : fallback;
+  return source
+    .map((step, index) => ({
+      id: step.id?.trim() || `step-${index + 1}`,
+      label: step.label?.trim() || `Step ${index + 1}`,
+      command: step.command?.trim() ?? '',
+      delayMs: clamp(Number(step.delayMs), 0, 600000, index === 0 ? 0 : 1000)
+    }))
+    .filter((step) => step.command);
+}
+
+function normalizeDiscord(config?: Partial<DiscordConfig>): DiscordConfig {
+  return {
+    enabled: Boolean(config?.enabled),
+    commandPrefix: config?.commandPrefix?.trim() || DEFAULT_MODULES.discord.commandPrefix,
+    notifyChat: config?.notifyChat ?? DEFAULT_MODULES.discord.notifyChat,
+    notifyEvents: config?.notifyEvents ?? DEFAULT_MODULES.discord.notifyEvents,
+    pollCommands: Boolean(config?.pollCommands),
+    pollIntervalMs: clamp(Number(config?.pollIntervalMs), 5000, 120000, DEFAULT_MODULES.discord.pollIntervalMs),
+    channelId: config?.channelId?.trim() ?? ''
+  };
+}
+
+function normalizeAutoResponse(config?: Partial<AutoResponseConfig>): AutoResponseConfig {
+  return {
+    enabled: Boolean(config?.enabled),
+    rules: normalizeAutoResponseRules(config?.rules)
+  };
+}
+
+function normalizeAutoResponseRules(rules?: AutoResponseRule[]): AutoResponseRule[] {
+  const source = rules?.length ? rules : DEFAULT_MODULES.autoResponse.rules;
+  return source
+    .map((rule, index) => ({
+      id: rule.id?.trim() || `auto-response-${index + 1}`,
+      enabled: rule.enabled ?? true,
+      label: rule.label?.trim() || `Rule ${index + 1}`,
+      match: rule.match?.trim() ?? '',
+      response: rule.response?.trim() ?? '',
+      cooldownMs: clamp(Number(rule.cooldownMs), 0, 300000, 5000)
+    }))
+    .filter((rule) => rule.match && rule.response)
+    .slice(0, 16);
+}
+
+function normalizePosition(value: Partial<PositionSnapshot> | undefined, fallback: PositionSnapshot): PositionSnapshot {
+  return {
+    x: Number.isFinite(Number(value?.x)) ? Number(value?.x) : fallback.x,
+    y: Number.isFinite(Number(value?.y)) ? Number(value?.y) : fallback.y,
+    z: Number.isFinite(Number(value?.z)) ? Number(value?.z) : fallback.z
   };
 }
 
@@ -1144,4 +2267,232 @@ function itemKey(item: InventoryItemLike): string | null {
 
 function itemLabel(item: InventoryItemLike): string {
   return item.displayName ?? item.name ?? 'food item';
+}
+
+function captureInventory(bot: BotLike): LiveInventorySnapshot {
+  const slots = (bot.inventory?.slots ?? [])
+    .map((item, slot) => itemSnapshot(item, slot))
+    .filter((item): item is InventoryItemSnapshot => Boolean(item));
+  const heldSlot = typeof bot.quickBarSlot === 'number' ? 36 + bot.quickBarSlot : null;
+  const heldItem = itemSnapshot(bot.heldItem ?? (heldSlot == null ? null : bot.inventory?.slots?.[heldSlot]), heldSlot ?? -1);
+  const windowSlots = (bot.currentWindow?.slots ?? [])
+    .map((item, slot) => itemSnapshot(item, slot))
+    .filter((item): item is InventoryItemSnapshot => Boolean(item));
+  return {
+    updatedAt: new Date().toISOString(),
+    heldItem,
+    armor: slots.filter((item) => item.slot >= 5 && item.slot <= 8),
+    crafting: slots.filter((item) => item.slot >= 1 && item.slot <= 4),
+    storage: windowSlots.length > 0 ? windowSlots : slots.filter((item) => item.slot >= 9),
+    slots,
+    openWindowTitle: stringifyMinecraftText(bot.currentWindow?.title ?? null)
+  };
+}
+
+function itemSnapshot(
+  item: InventoryItemLike | null | undefined,
+  fallbackSlot: number | null
+): InventoryItemSnapshot | null {
+  if (!item || !item.name) return null;
+  return {
+    slot: typeof item.slot === 'number' ? item.slot : fallbackSlot ?? -1,
+    name: item.name,
+    displayName: item.displayName ?? item.name,
+    count: Math.max(1, Number(item.count) || 1)
+  };
+}
+
+function botPosition(bot: BotLike): PositionSnapshot | null {
+  const position = bot.entity?.position;
+  if (!position) return null;
+  return {
+    x: Math.floor(position.x),
+    y: Math.floor(position.y),
+    z: Math.floor(position.z)
+  };
+}
+
+function cactusPlan(origin: PositionSnapshot, config: CactusFarmConfig): OperationWorkItem[] {
+  const work: OperationWorkItem[] = [];
+  const offsets: PositionSnapshot[] = [];
+  for (let x = -config.radius; x <= config.radius; x += 2) {
+    for (let z = -config.radius; z <= config.radius; z += 2) {
+      offsets.push({ x, y: 0, z });
+    }
+  }
+  for (let layer = 0; layer < config.layers; layer += 1) {
+    const baseY = layer * 3;
+    for (const offset of offsets) {
+      const sand = addPosition(origin, { x: offset.x, y: baseY, z: offset.z });
+      const cactus = addPosition(origin, { x: offset.x, y: baseY + 1, z: offset.z });
+      work.push({ action: 'place', position: sand, itemName: 'sand' });
+      work.push({ action: 'place', position: cactus, itemName: 'cactus' });
+    }
+  }
+  return work;
+}
+
+function positionsInBox(a: PositionSnapshot, b: PositionSnapshot): PositionSnapshot[] {
+  const minX = Math.min(a.x, b.x);
+  const maxX = Math.max(a.x, b.x);
+  const minY = Math.min(a.y, b.y);
+  const maxY = Math.max(a.y, b.y);
+  const minZ = Math.min(a.z, b.z);
+  const maxZ = Math.max(a.z, b.z);
+  const positions: PositionSnapshot[] = [];
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      for (let z = minZ; z <= maxZ; z += 1) {
+        positions.push({ x, y, z });
+      }
+    }
+  }
+  return positions;
+}
+
+function addPosition(a: PositionSnapshot, b: PositionSnapshot): PositionSnapshot {
+  return {
+    x: Math.round(a.x + b.x),
+    y: Math.round(a.y + b.y),
+    z: Math.round(a.z + b.z)
+  };
+}
+
+function toVec3(position: PositionSnapshot): Vec3 {
+  return new Vec3(position.x, position.y, position.z);
+}
+
+function scalePosition(position: PositionSnapshot, scale: number): PositionSnapshot {
+  return {
+    x: position.x * scale,
+    y: position.y * scale,
+    z: position.z * scale
+  };
+}
+
+function directionVector(direction: GeneratorMineConfig['direction']): PositionSnapshot {
+  switch (direction) {
+    case 'south':
+      return { x: 0, y: 0, z: 1 };
+    case 'east':
+      return { x: 1, y: 0, z: 0 };
+    case 'west':
+      return { x: -1, y: 0, z: 0 };
+    case 'north':
+    default:
+      return { x: 0, y: 0, z: -1 };
+  }
+}
+
+function formatPosition(position: PositionSnapshot): string {
+  return `${position.x},${position.y},${position.z}`;
+}
+
+function isAirBlock(block: BlockLike): boolean {
+  return !block.name || block.name === 'air' || block.boundingBox === 'empty';
+}
+
+function inventoryItemCount(bot: BotLike, itemName: string): number {
+  return (bot.inventory?.items?.() ?? [])
+    .filter((item) => itemKey(item) === itemName)
+    .reduce((total, item) => total + (Math.max(1, Number(item.count) || 1)), 0);
+}
+
+function findInventoryItem(bot: BotLike, itemName: string): InventoryItemLike | null {
+  return (bot.inventory?.items?.() ?? []).find((item) => itemKey(item) === itemName) ?? null;
+}
+
+function isMatureCrop(block: BlockLike, crop: CropFarmConfig['crop']): boolean {
+  const name = block.name ?? '';
+  if (crop === 'pumpkin') return name === 'pumpkin';
+  if (crop === 'melon') return name === 'melon';
+  const expected = cropBlockName(crop);
+  if (name !== expected) return false;
+  const age = typeof block.metadata === 'number' ? block.metadata : 7;
+  return crop === 'nether_wart' ? age >= 3 : age >= 7;
+}
+
+function cropBlockName(crop: CropFarmConfig['crop']): string {
+  switch (crop) {
+    case 'carrot':
+      return 'carrots';
+    case 'potato':
+      return 'potatoes';
+    case 'beetroot':
+      return 'beetroots';
+    case 'nether_wart':
+      return 'nether_wart';
+    case 'pumpkin':
+      return 'pumpkin';
+    case 'melon':
+      return 'melon';
+    case 'wheat':
+    default:
+      return 'wheat';
+  }
+}
+
+function cropSeedName(crop: CropFarmConfig['crop']): string {
+  switch (crop) {
+    case 'wheat':
+      return 'wheat_seeds';
+    case 'beetroot':
+      return 'beetroot_seeds';
+    case 'pumpkin':
+      return 'pumpkin_seeds';
+    case 'melon':
+      return 'melon_seeds';
+    case 'carrot':
+      return 'carrot';
+    case 'potato':
+      return 'potato';
+    case 'nether_wart':
+      return 'nether_wart';
+    default:
+      return '';
+  }
+}
+
+function cropLabel(crop: CropFarmConfig['crop']): string {
+  return crop.replaceAll('_', ' ');
+}
+
+function operationEventType(kind: OperationKind): SessionEvent['type'] {
+  switch (kind) {
+    case 'cactusFarm':
+      return 'cactus';
+    case 'cropFarm':
+      return 'farm';
+    case 'generator':
+      return 'generator';
+    case 'script':
+      return 'script';
+    case 'discord':
+      return 'discord';
+    case 'area':
+    default:
+      return 'area';
+  }
+}
+
+function mergeStats(current: Record<string, number>, delta: Record<string, number>): Record<string, number> {
+  const next = { ...current };
+  for (const [key, value] of Object.entries(delta)) {
+    next[key] = (next[key] ?? 0) + value;
+  }
+  return next;
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/(\/(?:login|register)\s+)(\S+)(?:\s+\S+)?/gi, '$1******')
+    .replace(/(password|token|webhook)=\S+/gi, '$1=******');
+}
+
+function discordRuntimeLabel(runtime: DiscordRuntime): string {
+  if (!runtime.enabled) return 'disabled';
+  const parts = [];
+  if (runtime.webhookUrl) parts.push('webhook');
+  if (runtime.botToken && runtime.channelId) parts.push('commands');
+  return parts.length > 0 ? parts.join(' + ') : 'enabled without credentials';
 }

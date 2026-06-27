@@ -1,6 +1,6 @@
 {
   "name": "afk-launcher",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "ChunkKeeper desktop launcher for authorized Minecraft Java AFK sessions.",
   "author": "smojka",
   "type": "module",
@@ -31,7 +31,9 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit"
   },
   "dependencies": {
-    "mineflayer": "^4.33.0"
+    "mineflayer": "^4.33.0",
+    "socks": "^2.8.9",
+    "vec3": "^0.1.10"
   },
   "devDependencies": {
     "@electron/asar": "^3.4.1",
@@ -97,10 +99,8 @@
       ],
       "category": "public.app-category.utilities",
       "icon": "build/icon.icns",
-      "gatekeeperAssess": false,
       "hardenedRuntime": false,
       "identity": "-",
-      "notarize": false,
       "artifactName": "ChunkKeeper-${version}-${arch}.${ext}"
     },
     "dmg": {

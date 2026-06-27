@@ -5,6 +5,7 @@ release/
 .vite/
 .claude/
 .playwright-cli/
+.impeccable/
 coverage/
 *.log
 .DS_Store

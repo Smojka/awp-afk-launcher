@@ -4,7 +4,14 @@ import http, { type IncomingMessage, type Server, type ServerResponse } from 'no
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import type { BotManager } from '../bot/botManager.js';
-import type { AppSettings, LauncherState, SaveProfileInput } from '../../shared/types.js';
+import type {
+  AppSettings,
+  DiscordRuntimeInput,
+  LauncherState,
+  OperationKind,
+  OperationStartRequest,
+  SaveProfileInput
+} from '../../shared/types.js';
 
 export interface LocalWebServer {
   host: string;
@@ -207,6 +214,41 @@ async function handleApiRequest(
   if (request.method === 'POST' && parts.length === 4 && parts[0] === 'api' && parts[1] === 'bots' && parts[3] === 'chat') {
     const body = await readJsonBody<{ message?: string }>(request);
     sendJson(request, response, 200, await options.manager.sendChat(parts[2], body.message ?? ''));
+    return;
+  }
+
+  if (request.method === 'POST' && parts.length === 4 && parts[0] === 'api' && parts[1] === 'bots' && parts[3] === 'quick-script') {
+    const body = await readJsonBody<{ command?: string }>(request);
+    sendJson(request, response, 200, await options.manager.runQuickScript(parts[2], body.command ?? ''));
+    return;
+  }
+
+  if (request.method === 'POST' && parts.length === 4 && parts[0] === 'api' && parts[1] === 'bots' && parts[3] === 'complete') {
+    const body = await readJsonBody<{ partial?: string }>(request);
+    sendJson(request, response, 200, { completions: await options.manager.completeChat(parts[2], body.partial ?? '') });
+    return;
+  }
+
+  if (request.method === 'POST' && parts.length === 4 && parts[0] === 'api' && parts[1] === 'bots' && parts[3] === 'discord') {
+    const body = await readJsonBody<DiscordRuntimeInput>(request);
+    sendJson(request, response, 200, await options.manager.configureDiscord(parts[2], body));
+    return;
+  }
+
+  if (request.method === 'POST' && parts.length === 4 && parts[0] === 'api' && parts[1] === 'bots' && parts[3] === 'operations') {
+    const body = await readJsonBody<OperationStartRequest>(request);
+    sendJson(request, response, 200, await options.manager.startOperation(parts[2], body));
+    return;
+  }
+
+  if (
+    request.method === 'DELETE' &&
+    parts.length === 5 &&
+    parts[0] === 'api' &&
+    parts[1] === 'bots' &&
+    parts[3] === 'operations'
+  ) {
+    sendJson(request, response, 200, await options.manager.stopOperation(parts[2], parts[4] as OperationKind));
     return;
   }
 

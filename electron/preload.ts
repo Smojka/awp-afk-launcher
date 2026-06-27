@@ -1,5 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppSettings, LauncherApi, LauncherState, SaveProfileInput } from '../src/shared/types.js';
+import type {
+  AppSettings,
+  DiscordRuntimeInput,
+  LauncherApi,
+  LauncherState,
+  OperationKind,
+  OperationStartRequest,
+  SaveProfileInput
+} from '../src/shared/types.js';
 
 const api: LauncherApi = {
   platform: process.platform,
@@ -13,6 +21,16 @@ const api: LauncherApi = {
   stopAll: () => ipcRenderer.invoke('bot:stopAll') as Promise<LauncherState>,
   sendChat: (profileId: string, message: string) =>
     ipcRenderer.invoke('bot:sendChat', profileId, message) as Promise<LauncherState>,
+  startOperation: (profileId: string, request: OperationStartRequest) =>
+    ipcRenderer.invoke('bot:startOperation', profileId, request) as Promise<LauncherState>,
+  stopOperation: (profileId: string, kind: OperationKind) =>
+    ipcRenderer.invoke('bot:stopOperation', profileId, kind) as Promise<LauncherState>,
+  runQuickScript: (profileId: string, command: string) =>
+    ipcRenderer.invoke('bot:runQuickScript', profileId, command) as Promise<LauncherState>,
+  completeChat: (profileId: string, partial: string) =>
+    ipcRenderer.invoke('bot:completeChat', profileId, partial) as Promise<string[]>,
+  configureDiscord: (profileId: string, input: DiscordRuntimeInput) =>
+    ipcRenderer.invoke('bot:configureDiscord', profileId, input) as Promise<LauncherState>,
   updateSettings: (patch: Partial<AppSettings>) =>
     ipcRenderer.invoke('app:updateSettings', patch) as Promise<LauncherState>,
   openUserData: () => ipcRenderer.invoke('app:openUserData') as Promise<void>,
