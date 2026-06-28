@@ -6,6 +6,35 @@ ChunkKeeper is a desktop launcher for authorized Minecraft Java AFK sessions on 
 
 The app is intentionally narrow: it is not a modpack launcher, hacked client, combat tool, account marketplace, or full Minecraft client replacement. Use it only on servers where you own the account and AFK automation is allowed.
 
+## Opening ChunkKeeper On macOS (Downloaded Build)
+
+ChunkKeeper is ad-hoc signed but **not notarized by Apple**, because notarization requires a paid ($99/year) Apple Developer ID that this project does not use. So the first time you launch a build downloaded from GitHub, macOS shows:
+
+> **"ChunkKeeper" Not Opened** — Apple could not verify "ChunkKeeper" is free of malware…
+
+This is the one-time Gatekeeper prompt that appears for every free, unsigned Mac app. It is not a real malware finding: the app is correctly signed and runs normally once you clear the prompt a single time. **In that dialog click `Done`, never `Move to Trash`.** Then use either method below — you only do this once per install.
+
+**Method 1 — System Settings (no Terminal)**
+
+1. Open the DMG and drag **ChunkKeeper** into **Applications**.
+2. Double-click ChunkKeeper, then click **Done** on the warning.
+3. Open **System Settings → Privacy & Security** and scroll down to the **Security** section.
+4. Next to *"ChunkKeeper was blocked to protect your Mac"* click **Open Anyway**, then confirm with your login password.
+   - The button only appears for about an hour after step 2. If it is gone, double-click the app again to bring it back.
+5. ChunkKeeper opens and macOS remembers the choice. The warning never returns.
+
+**Method 2 — one Terminal command (most reliable)**
+
+After dragging ChunkKeeper into Applications, open Terminal and run:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/ChunkKeeper.app"
+```
+
+Use `"/Applications/ChunkKeeper Web.app"` for the web-dashboard build. Then open the app normally. This removes the "downloaded from the internet" quarantine flag, so Gatekeeper stops checking the app and it launches with no prompt.
+
+The release also ships `ChunkKeeper-macOS-First-Run.zip`, which automates Method 2. Because the helper is itself a downloaded file, run it through Terminal so macOS does not block it: `bash ~/Downloads/ChunkKeeper-macOS-First-Run.command`.
+
 ## What Is Included
 
 - Electron desktop shell with a React/Vite renderer and TypeScript main process.
@@ -273,17 +302,7 @@ git push origin v0.1.4
 
 That workflow builds fresh DMG and EXE artifacts in GitHub Actions and uploads them to the GitHub Release. ChunkKeeper does not require paid Apple Developer ID credentials to publish.
 
-macOS may show "Apple could not verify" for direct GitHub downloads. The release includes `ChunkKeeper-macOS-First-Run.zip` for that first launch:
-
-1. Open the ChunkKeeper DMG.
-2. Extract `ChunkKeeper-macOS-First-Run.zip`.
-3. Run `ChunkKeeper-macOS-First-Run.command`.
-
-The helper copies the mounted app to Applications when needed, removes the quarantine flag, and opens ChunkKeeper. If macOS will not open the helper by double-click, run it from Terminal:
-
-```bash
-bash ~/Downloads/ChunkKeeper-macOS-First-Run.command
-```
+macOS shows "Apple could not verify" on the first launch of a direct GitHub download because the build is ad-hoc signed but not notarized (notarization needs a paid Apple Developer ID). This is a one-time prompt; see [Opening ChunkKeeper On macOS (Downloaded Build)](#opening-chunkkeeper-on-macos-downloaded-build) for the bypass. The release also ships `ChunkKeeper-macOS-First-Run.zip`, which automates the quarantine removal.
 
 ## Release Checklist
 

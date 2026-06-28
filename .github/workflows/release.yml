@@ -29,14 +29,36 @@ jobs:
           cat > release-notes.md <<'NOTES'
           ChunkKeeper release build.
 
-          Included artifacts:
+          ### Included artifacts
           - ChunkKeeper native macOS ARM64 DMG
           - ChunkKeeper native Windows x64 NSIS installer
           - ChunkKeeper Web macOS ARM64 DMG
           - ChunkKeeper Web Windows x64 portable EXE
           - ChunkKeeper macOS first-run helper ZIP
 
-          Validation performed in CI:
+          ### First launch on macOS
+
+          macOS shows **"Apple could not verify 'ChunkKeeper' is free of malware"** with a
+          *Move to Trash* button. This is the normal one-time Gatekeeper prompt for any free,
+          un-notarized Mac app (notarization needs a paid Apple Developer ID) — not a real
+          malware finding. The app is ad-hoc signed and runs fine once you clear it once.
+          **Click `Done`, never `Move to Trash`.** Then use either method:
+
+          **No Terminal:** drag ChunkKeeper to Applications and double-click it → `Done` →
+          open **System Settings → Privacy & Security**, scroll to **Security**, and click
+          **Open Anyway** next to "ChunkKeeper was blocked", then confirm with your password.
+
+          **One Terminal command (most reliable):** after copying the app to Applications, run
+
+          ```
+          xattr -dr com.apple.quarantine "/Applications/ChunkKeeper.app"
+          ```
+
+          (use `"/Applications/ChunkKeeper Web.app"` for the web build), then open it normally.
+          The bundled `ChunkKeeper-macOS-First-Run.zip` automates this; run it with
+          `bash ~/Downloads/ChunkKeeper-macOS-First-Run.command`.
+
+          ### Validation performed in CI
           - TypeScript typecheck
           - Vitest test suite
           - Production dependency audit
@@ -45,7 +67,6 @@ jobs:
           - macOS app signature and DMG verification
 
           ChunkKeeper is the native desktop app. ChunkKeeper Web starts the localhost browser dashboard without a Windows setup installer.
-          On macOS, use the first-run helper if Apple shows "Apple could not verify".
           NOTES
 
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
