@@ -223,10 +223,19 @@ function inventory(items: InventoryItemSnapshot[]): BotSessionSnapshot['inventor
   return {
     updatedAt: new Date().toISOString(),
     heldItem: items[0] ?? null,
+    selectedHotbar: 0,
     armor: [],
     crafting: [],
     storage: items,
     slots: items,
+    window: {
+      kind: 'inventory',
+      title: null,
+      totalSlots: 46,
+      inventoryStart: 9,
+      hotbarStart: 36,
+      craftingResultSlot: 0
+    },
     openWindowTitle: null
   };
 }

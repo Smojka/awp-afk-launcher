@@ -21,8 +21,12 @@ import {
   type CropFarmConfig,
   type DiscordConfig,
   type DiscordRuntimeInput,
+  type EquipDestination,
   type GeneratorMineConfig,
+  type GeneratorSlot,
+  type InventoryActionRequest,
   type InventoryItemSnapshot,
+  type InventoryWindowLayout,
   type LiveInventorySnapshot,
   type OperationKind,
   type OperationSnapshot,
@@ -58,12 +62,23 @@ type ProxyClientLike = {
 type InventoryItemLike = {
   slot?: number;
   type?: number;
+  metadata?: number;
   name?: string;
   displayName?: string;
   count?: number;
   foodPoints?: number;
   saturation?: number;
   effectiveQuality?: number;
+};
+
+type WindowLike = {
+  title?: unknown;
+  slots?: Array<InventoryItemLike | null | undefined>;
+  items?: () => InventoryItemLike[];
+  inventoryStart?: number;
+  inventoryEnd?: number;
+  hotbarStart?: number;
+  craftingResultSlot?: number;
 };
 
 type FoodDataLike = {
@@ -96,19 +111,20 @@ type BotLike = RoutineBot &
     };
     game?: { dimension?: string };
     registry?: BotRegistryLike;
-    inventory?: {
-      slots?: Array<InventoryItemLike | null | undefined>;
-      items?: () => InventoryItemLike[];
-    };
-    currentWindow?: {
-      title?: unknown;
-      slots?: Array<InventoryItemLike | null | undefined>;
-    } | null;
+    inventory?: WindowLike;
+    currentWindow?: WindowLike | null;
     quickBarSlot?: number;
     heldItem?: InventoryItemLike | null;
     players?: Record<string, unknown>;
     player?: { ping?: number };
-    equip?: (item: InventoryItemLike, destination: 'hand') => Promise<void> | void;
+    equip?: (item: InventoryItemLike | number, destination: EquipDestination | null) => Promise<void> | void;
+    unequip?: (destination: EquipDestination | null) => Promise<void> | void;
+    tossStack?: (item: InventoryItemLike) => Promise<void> | void;
+    toss?: (itemType: number, metadata: number | null, count: number | null) => Promise<void> | void;
+    moveSlotItem?: (sourceSlot: number, destSlot: number) => Promise<void> | void;
+    clickWindow?: (slot: number, mouseButton: number, mode: number) => Promise<void> | void;
+    setQuickBarSlot?: (slot: number) => void;
+    deactivateItem?: () => void;
     consume?: () => Promise<void> | void;
     lookAt?: (position: Vec3, force?: boolean) => Promise<void> | void;
     blockAt?: (position: PositionSnapshot | Vec3) => BlockLike | null;
@@ -122,7 +138,12 @@ type BotLike = RoutineBot &
       setGoal?: (goal: unknown | null) => void;
     };
     loadPlugin?: (plugin: unknown) => void;
-    tabComplete?: (partial: string) => Promise<Array<string | { match?: string }>> | Array<string | { match?: string }>;
+    tabComplete?: (
+      partial: string,
+      assumeCommand?: boolean,
+      sendBlockInSight?: boolean,
+      timeout?: number
+    ) => Promise<Array<string | { match?: string }>> | Array<string | { match?: string }>;
     quit?: (reason?: string) => void;
     respawn?: () => void;
   };
@@ -156,7 +177,23 @@ interface ManagedSession {
   lastFoodWarningAt: number;
   /** Anchor used by the crop harvest loop after a build pass so it scans the field it just planted. */
   cropFarmOrigin: PositionSnapshot | null;
+  /** Server command graph from the 1.13+ `declare_commands` packet, used for local tab completion. */
+  commandNodes: ParsedCommandNode[] | null;
+  /** Index of the root node within {@link ManagedSession.commandNodes}. */
+  commandRoot: number;
   snapshot: BotSessionSnapshot;
+}
+
+/** A normalized Brigadier command node distilled from the `declare_commands` packet. */
+interface ParsedCommandNode {
+  /** 0 = root, 1 = literal (a typed command word), 2 = argument (a value placeholder). */
+  type: number;
+  /** Literal/argument name, or null for the root. */
+  name: string | null;
+  /** Indices of child nodes within the parsed node array. */
+  children: number[];
+  /** Index of a node this one redirects to (e.g. `/msg` -> `/tell`), or null. */
+  redirect: number | null;
 }
 
 type OperationWorkItem = {
@@ -183,6 +220,12 @@ const MAX_OPERATION_VOLUME = 4096;
 const DISCORD_API_BASE = 'https://discord.com/api/v10';
 const PLACE_BLOCK_TIMEOUT_MS = 10000;
 const PATHFIND_TIMEOUT_MS = 15000;
+const INVENTORY_ACTION_TIMEOUT_MS = 8000;
+// Modern/proxy servers usually never answer serverbound tab_complete (they resolve
+// command names client-side from declare_commands and only reply for ask_server args),
+// so keep the wait short — we fall back to local completions when it lapses.
+const TAB_COMPLETE_TIMEOUT_MS = 1500;
+const MAX_TAB_COMPLETIONS = 12;
 
 // Populated once by defaultMineflayerFactory after the pathfinder plugin loads.
 // Tests inject their own factory, so these stay null there and every pathfinder
@@ -234,17 +277,26 @@ const DEFAULT_MODULES: BotModulesConfig = {
   area: {
     enabled: false,
     mode: 'mine',
+    coords: 'relative',
     from: { x: -2, y: 0, z: -2 },
     to: { x: 2, y: 2, z: 2 },
     fillBlock: 'cobblestone',
+    hollow: false,
+    walk: true,
     actionDelayMs: 450
   },
   generator: {
     enabled: false,
-    mode: 'forward',
-    direction: 'north',
-    depth: 4,
-    actionDelayMs: 350
+    slots: [
+      { id: 'gen-n', x: 0, y: 0, z: -1 },
+      { id: 'gen-s', x: 0, y: 0, z: 1 },
+      { id: 'gen-e', x: 1, y: 0, z: 0 },
+      { id: 'gen-w', x: -1, y: 0, z: 0 }
+    ],
+    blockFilter: 'cobblestone',
+    walk: false,
+    actionDelayMs: 350,
+    regenDelayMs: 1500
   },
   script: {
     enabled: false,
@@ -538,7 +590,7 @@ export class BotManager extends EventEmitter {
     }
     session.bot.chat?.(normalized);
     this.pushChat(session, 'bot', normalized);
-    this.pushEvent(session, 'chat', 'info', 'Chat sent', normalized);
+    this.pushEvent(session, 'chat', 'info', 'Chat sent', redactSensitiveText(normalized));
     this.emitState();
     return this.getState();
   }
@@ -570,7 +622,7 @@ export class BotManager extends EventEmitter {
         );
         break;
       case 'generator':
-        this.startGeneratorMine(
+        this.startGeneratorFarm(
           session,
           session.bot,
           normalizeGeneratorMine({ ...modules.generator, ...(request.config as Partial<GeneratorMineConfig> | undefined) })
@@ -612,8 +664,131 @@ export class BotManager extends EventEmitter {
     }
     session.bot.chat?.(normalized);
     this.pushChat(session, 'bot', normalized);
-    this.pushEvent(session, 'script', 'info', 'Quick script sent', normalized);
+    this.pushEvent(session, 'script', 'info', 'Quick script sent', redactSensitiveText(normalized));
     void this.notifyDiscord(session, `Quick script: ${redactSensitiveText(normalized)}`, 'event');
+    this.emitState();
+    return this.getState();
+  }
+
+  async inventoryAction(profileId: string, request: InventoryActionRequest): Promise<LauncherState> {
+    this.assertLoaded();
+    const session = this.requireSession(profileId);
+    const bot = session.bot;
+    if (!bot || session.snapshot.state !== 'online') {
+      this.pushEvent(session, 'inventory', 'warn', 'Inventory action skipped', 'Bot must be online.');
+      this.emitState();
+      return this.getState();
+    }
+
+    // The grid sends indices relative to whichever window is open; resolve live items from it.
+    const activeWindow = bot.currentWindow ?? bot.inventory;
+    const held = bot.heldItem ?? null;
+    const slotItem = (slot: number): InventoryItemLike | null => activeWindow?.slots?.[slot] ?? null;
+
+    try {
+      switch (request.action) {
+        case 'dropOne': {
+          const item = slotItem(request.slot);
+          if (!item || typeof item.type !== 'number' || typeof bot.toss !== 'function') {
+            this.pushEvent(session, 'inventory', 'muted', 'Nothing to drop', `Slot ${request.slot}`);
+            break;
+          }
+          await withTimeout(
+            Promise.resolve(bot.toss(item.type, item.metadata ?? null, 1)),
+            INVENTORY_ACTION_TIMEOUT_MS,
+            'toss'
+          );
+          this.pushEvent(session, 'inventory', 'info', 'Dropped item', `${itemLabel(item)} x1`);
+          break;
+        }
+        case 'dropStack': {
+          const item = slotItem(request.slot);
+          if (!item || typeof bot.tossStack !== 'function') {
+            this.pushEvent(session, 'inventory', 'muted', 'Nothing to drop', `Slot ${request.slot}`);
+            break;
+          }
+          await withTimeout(Promise.resolve(bot.tossStack(item)), INVENTORY_ACTION_TIMEOUT_MS, 'tossStack');
+          this.pushEvent(session, 'inventory', 'info', 'Dropped stack', `${itemLabel(item)} x${Math.max(1, Number(item.count) || 1)}`);
+          break;
+        }
+        case 'move': {
+          if (typeof bot.moveSlotItem !== 'function') break;
+          await withTimeout(
+            Promise.resolve(bot.moveSlotItem(request.from, request.to)),
+            INVENTORY_ACTION_TIMEOUT_MS,
+            'moveSlotItem'
+          );
+          this.pushEvent(session, 'inventory', 'muted', 'Moved item', `slot ${request.from} → ${request.to}`);
+          break;
+        }
+        case 'transfer': {
+          if (typeof bot.clickWindow !== 'function') break;
+          // mode 1 = shift-click quick move between the container and the player inventory.
+          await withTimeout(Promise.resolve(bot.clickWindow(request.slot, 0, 1)), INVENTORY_ACTION_TIMEOUT_MS, 'transfer');
+          this.pushEvent(session, 'inventory', 'muted', 'Transferred item', `Slot ${request.slot}`);
+          break;
+        }
+        case 'equip': {
+          const item = bot.inventory?.slots?.[request.slot] ?? null;
+          if (!item || typeof bot.equip !== 'function') {
+            this.pushEvent(session, 'inventory', 'muted', 'Nothing to equip', `Slot ${request.slot}`);
+            break;
+          }
+          await withTimeout(
+            Promise.resolve(bot.equip(item, request.destination)),
+            INVENTORY_ACTION_TIMEOUT_MS,
+            'equip'
+          );
+          this.pushEvent(session, 'inventory', 'ok', 'Equipped item', `${itemLabel(item)} → ${request.destination}`);
+          break;
+        }
+        case 'unequip': {
+          if (typeof bot.unequip !== 'function') break;
+          await withTimeout(Promise.resolve(bot.unequip(request.destination)), INVENTORY_ACTION_TIMEOUT_MS, 'unequip');
+          this.pushEvent(session, 'inventory', 'info', 'Unequipped slot', request.destination);
+          break;
+        }
+        case 'selectHotbar': {
+          if (typeof bot.setQuickBarSlot !== 'function') break;
+          const hotbar = clamp(Number(request.hotbar), 0, 8, 0);
+          bot.setQuickBarSlot(hotbar);
+          this.pushEvent(session, 'inventory', 'muted', 'Selected hotbar slot', String(hotbar + 1));
+          break;
+        }
+        case 'useHeld': {
+          if (typeof bot.activateItem !== 'function') break;
+          await Promise.resolve(bot.activateItem());
+          // Release shortly after so right-click style uses (place/throw) complete and don't latch on.
+          setTimeout(() => {
+            try {
+              bot.deactivateItem?.();
+            } catch {
+              /* best effort */
+            }
+          }, 200);
+          this.pushEvent(session, 'inventory', 'info', 'Used held item', held ? itemLabel(held) : undefined);
+          break;
+        }
+        case 'consume': {
+          const item = bot.inventory?.slots?.[request.slot] ?? null;
+          if (!item || typeof bot.equip !== 'function' || typeof bot.consume !== 'function') {
+            this.pushEvent(session, 'inventory', 'muted', 'Nothing to consume', `Slot ${request.slot}`);
+            break;
+          }
+          await withTimeout(Promise.resolve(bot.equip(item, 'hand')), INVENTORY_ACTION_TIMEOUT_MS, 'equip');
+          await withTimeout(Promise.resolve(bot.consume()), INVENTORY_ACTION_TIMEOUT_MS, 'consume');
+          this.pushEvent(session, 'inventory', 'ok', 'Consumed item', itemLabel(item));
+          break;
+        }
+        default:
+          break;
+      }
+      this.updateLiveTelemetry(session);
+    } catch (error) {
+      const message = formatError(error);
+      session.snapshot.lastError = message;
+      this.pushEvent(session, 'inventory', 'warn', 'Inventory action failed', message);
+    }
     this.emitState();
     return this.getState();
   }
@@ -621,27 +796,81 @@ export class BotManager extends EventEmitter {
   async completeChat(profileId: string, partial: string): Promise<string[]> {
     this.assertLoaded();
     const session = this.requireSession(profileId);
-    if (!session.bot || typeof session.bot.tabComplete !== 'function') {
-      session.snapshot.tabCompletions = [];
-      this.emitState();
-      return [];
+    if (session.snapshot.state !== 'online') {
+      return this.publishCompletions(session, []);
     }
-    try {
-      const result = await Promise.resolve(session.bot.tabComplete(partial));
-      const completions = result
-        .map((item) => (typeof item === 'string' ? item : item.match ?? ''))
-        .map((item) => item.trim())
-        .filter(Boolean)
-        .slice(0, 12);
-      session.snapshot.tabCompletions = completions;
-      this.emitState();
-      return completions;
-    } catch (error) {
-      this.pushEvent(session, 'script', 'warn', 'Tab completion failed', formatError(error));
-      session.snapshot.tabCompletions = [];
-      this.emitState();
-      return [];
+
+    const local = this.localCompletions(session, partial);
+
+    // Minecraft 1.13+ servers announce their full command list up front via
+    // declare_commands, so the local graph is authoritative: resolve from it and
+    // skip the serverbound tab_complete round-trip entirely. That round-trip is the
+    // source of the "Server did not respond" failures — modern and proxied servers
+    // resolve command names client-side and simply never answer it.
+    if (session.commandNodes?.length) {
+      return this.publishCompletions(session, local);
     }
+
+    // No command graph (pre-1.13 or a graph-less proxy). Those servers may still
+    // answer tab_complete, so ask — but stay silent on the common no-answer case and
+    // fall back to whatever we can offer locally instead of spamming the event log.
+    if (session.bot && typeof session.bot.tabComplete === 'function') {
+      try {
+        // assumeCommand=true so the server resolves it as a command (e.g. /s -> /spawn);
+        // sendBlockInSight=false skips a needless block raycast.
+        const result = await Promise.resolve(
+          session.bot.tabComplete(partial, true, false, TAB_COMPLETE_TIMEOUT_MS)
+        );
+        const server = (Array.isArray(result) ? result : [])
+          .map((item) => (typeof item === 'string' ? item : item?.match ?? ''))
+          .map((item) => item.trim())
+          .filter(Boolean);
+        if (server.length > 0) {
+          return this.publishCompletions(session, [...server, ...local]);
+        }
+      } catch {
+        // Server never answered; fall through to the local fallback below.
+      }
+    }
+    return this.publishCompletions(session, local);
+  }
+
+  private publishCompletions(session: ManagedSession, completions: string[]): string[] {
+    const trimmed = dedupeStrings(completions).slice(0, MAX_TAB_COMPLETIONS);
+    session.snapshot.tabCompletions = trimmed;
+    this.emitState();
+    return trimmed;
+  }
+
+  /**
+   * Build tab-completion candidates from data we already hold locally: the server's
+   * command graph, online player names, and the profile's configured commands. The
+   * returned strings are drop-in replacements for the last whitespace-delimited token
+   * of `partial` (the renderer swaps that token for the chosen suggestion).
+   */
+  private localCompletions(session: ManagedSession, partial: string): string[] {
+    // Trim only the leading whitespace — a trailing space is meaningful (it means the
+    // user has moved on to the next token), but a leading one must not shift indices.
+    const tokens = partial.replace(/^\s+/, '').split(/\s+/);
+    const lastToken = tokens[tokens.length - 1] ?? '';
+
+    if (tokens.length <= 1) {
+      // First token: complete the command name itself.
+      const prefix = lastToken.replace(/^\//, '').toLowerCase();
+      const candidates = new Set<string>();
+      for (const name of topLevelCommands(session)) candidates.add(`/${name}`);
+      for (const command of knownCommands(session.profile)) candidates.add(command);
+      return [...candidates]
+        .filter((candidate) => candidate.replace(/^\//, '').toLowerCase().startsWith(prefix))
+        .sort(caseInsensitive);
+    }
+
+    // Later tokens: complete online player names plus any nested command literals.
+    const prefix = lastToken.toLowerCase();
+    const candidates = new Set<string>();
+    for (const literal of nestedCommandLiterals(session, tokens)) candidates.add(literal);
+    for (const name of onlinePlayerNames(session)) candidates.add(name);
+    return [...candidates].filter((candidate) => candidate.toLowerCase().startsWith(prefix)).sort(caseInsensitive);
   }
 
   async configureDiscord(profileId: string, input: DiscordRuntimeInput): Promise<LauncherState> {
@@ -713,6 +942,8 @@ export class BotManager extends EventEmitter {
         hungerPaused: false,
         lastFoodWarningAt: 0,
         cropFarmOrigin: null,
+        commandNodes: null,
+        commandRoot: 0,
         snapshot: createSessionSnapshot(profile.id)
       });
     }
@@ -740,6 +971,16 @@ export class BotManager extends EventEmitter {
   }
 
   private attachBotEvents(session: ManagedSession, bot: BotLike): void {
+    // Capture the server's command graph (Minecraft 1.13+) so tab completion can
+    // resolve command names locally even when the server never answers tab_complete.
+    bot._client?.on?.('declare_commands', (packet: unknown) => {
+      session.commandNodes = parseCommandNodes(packet);
+      session.commandRoot =
+        typeof (packet as { rootIndex?: unknown })?.rootIndex === 'number'
+          ? (packet as { rootIndex: number }).rootIndex
+          : 0;
+    });
+
     bot.on('spawn', () => {
       configurePathfinderMovements(bot);
       const shouldRunStartup = !session.snapshot.startupActive && !session.startupCompleted;
@@ -800,11 +1041,11 @@ export class BotManager extends EventEmitter {
       this.emitState();
     });
 
+    // Player chat is already captured/notified by the 'messagestr' handler above
+    // (in the server's native rendering). Here we only drive auto-responses so the
+    // same line doesn't appear twice in the chat console.
     bot.on('chat', (username: string, message: string) => {
-      this.pushChat(session, 'server', `<${username}> ${message}`);
-      void this.notifyDiscord(session, `<${username}> ${message}`, 'chat');
       this.handleAutoResponse(session, username, message);
-      this.emitState();
     });
 
     bot.on('death', () => {
@@ -846,7 +1087,10 @@ export class BotManager extends EventEmitter {
       session.startupCompleted = false;
       session.foodGuardActive = false;
       session.hungerPaused = false;
+      session.commandNodes = null;
+      session.commandRoot = 0;
       session.bot = null;
+      session.snapshot.tabCompletions = [];
       session.snapshot.startupActive = false;
       session.snapshot.routineActive = false;
       session.snapshot.connectedAt = null;
@@ -1246,14 +1490,25 @@ export class BotManager extends EventEmitter {
   }
 
   private startAreaOperation(session: ManagedSession, bot: BotLike, config: AreaOperationConfig): void {
-    const origin = botPosition(bot);
-    if (!origin) {
-      this.blockOperation(session, 'area', 'Bot position is unavailable.');
+    let from = config.from;
+    let to = config.to;
+    if (config.coords === 'relative') {
+      const origin = botPosition(bot);
+      if (!origin) {
+        this.blockOperation(session, 'area', 'Bot position is unavailable.');
+        return;
+      }
+      from = addPosition(origin, config.from);
+      to = addPosition(origin, config.to);
+    } else {
+      from = roundPosition(config.from);
+      to = roundPosition(config.to);
+    }
+    const positions = areaPositions(from, to, config.mode, config.hollow);
+    if (positions.length === 0) {
+      this.blockOperation(session, 'area', 'Selected area is empty.');
       return;
     }
-    const from = addPosition(origin, config.from);
-    const to = addPosition(origin, config.to);
-    const positions = positionsInBox(from, to);
     if (positions.length > MAX_OPERATION_VOLUME) {
       this.blockOperation(session, 'area', `Area is too large: ${positions.length}/${MAX_OPERATION_VOLUME} blocks.`);
       return;
@@ -1261,38 +1516,89 @@ export class BotManager extends EventEmitter {
     const work: OperationWorkItem[] = positions.map((position) => ({
       action: config.mode === 'fill' ? 'place' : 'dig',
       position,
-      itemName: config.mode === 'fill' ? config.fillBlock : undefined
+      itemName: config.mode === 'fill' ? config.fillBlock : undefined,
+      walk: config.walk
     }));
     session.operationQueues.set('area', work);
-    this.updateOperation(session, 'area', 'running', `${config.mode === 'fill' ? 'Filling' : 'Mining'} selected 3D area`, {
+    const shape = config.hollow ? 'hollow' : 'solid';
+    const verb = config.mode === 'fill' ? 'Filling' : 'Mining';
+    this.updateOperation(session, 'area', 'running', `${verb} ${shape} area (${work.length} blocks)`, {
       completed: 0,
       total: work.length,
-      stats: { blocks: work.length }
+      stats: { blocks: work.length, done: 0, skipped: 0 }
     });
     this.scheduleOperationQueue(session, bot, 'area', config.actionDelayMs);
   }
 
-  private startGeneratorMine(session: ManagedSession, bot: BotLike, config: GeneratorMineConfig): void {
+  // The generator farm is a continuous loop, not a finite queue: it cycles over
+  // the configured slots, mining each regenerating block as it reappears and
+  // pausing regenDelayMs after every full pass so the blocks can re-form.
+  private startGeneratorFarm(session: ManagedSession, bot: BotLike, config: GeneratorMineConfig): void {
     const origin = botPosition(bot);
     if (!origin) {
       this.blockOperation(session, 'generator', 'Bot position is unavailable.');
       return;
     }
-    const directions = config.mode === 'four_way' ? (['north', 'south', 'east', 'west'] as const) : [config.direction];
-    const work: OperationWorkItem[] = directions.flatMap((direction) => {
-      const vector = directionVector(direction);
-      return Array.from({ length: config.depth }, (_, index) => ({
-        action: 'dig' as const,
-        position: addPosition(origin, scalePosition(vector, index + 1))
-      }));
-    });
-    session.operationQueues.set('generator', work);
-    this.updateOperation(session, 'generator', 'running', `${config.mode === 'four_way' ? '4-way' : config.direction} generator mining`, {
-      completed: 0,
-      total: work.length,
-      stats: { targets: work.length }
-    });
-    this.scheduleOperationQueue(session, bot, 'generator', config.actionDelayMs);
+    if (config.slots.length === 0) {
+      this.blockOperation(session, 'generator', 'No generator slots configured.');
+      return;
+    }
+    const slots = config.slots.map((slot) => addPosition(origin, { x: slot.x, y: slot.y, z: slot.z }));
+    this.updateOperation(
+      session,
+      'generator',
+      'running',
+      `Farming ${slots.length} generator slot${slots.length > 1 ? 's' : ''}`,
+      {
+        completed: 0,
+        total: null,
+        stats: { mined: 0, skipped: 0, passes: 0 }
+      }
+    );
+
+    let index = 0;
+    const tick = () => {
+      if (session.bot !== bot || session.snapshot.operations.generator.state !== 'running') return;
+      const position = slots[index];
+      const lastInPass = index === slots.length - 1;
+      void this.runGeneratorSlot(session, bot, config, position).finally(() => {
+        if (session.bot !== bot || session.snapshot.operations.generator.state !== 'running') return;
+        if (lastInPass) this.addOperationStats(session, 'generator', { passes: 1 });
+        index = (index + 1) % slots.length;
+        const delay = lastInPass ? config.actionDelayMs + config.regenDelayMs : config.actionDelayMs;
+        const timer = setTimeout(tick, delay);
+        session.operationTimers.set('generator', timer);
+      });
+    };
+    tick();
+  }
+
+  private async runGeneratorSlot(
+    session: ManagedSession,
+    bot: BotLike,
+    config: GeneratorMineConfig,
+    position: PositionSnapshot
+  ): Promise<void> {
+    try {
+      if (typeof bot.blockAt !== 'function' || typeof bot.dig !== 'function') {
+        this.blockOperation(session, 'generator', 'Mineflayer block/dig APIs are unavailable.');
+        return;
+      }
+      if (config.walk) await this.walkWithinReach(bot, position);
+      const block = bot.blockAt(toVec3(position));
+      // Air or a block that hasn't regenerated into the expected type yet — wait.
+      if (!block || isAirBlock(block) || (config.blockFilter && block.name !== config.blockFilter)) {
+        this.addOperationStats(session, 'generator', { skipped: 1 });
+        return;
+      }
+      await Promise.resolve(bot.dig(block));
+      this.addOperationProgress(session, 'generator', 1, { mined: 1 });
+      this.updateLiveTelemetry(session);
+      this.emitState();
+    } catch (error) {
+      this.blockOperation(session, 'generator', formatError(error), 'error');
+      this.emitState();
+    }
   }
 
   private startScriptLoop(session: ManagedSession, bot: BotLike, config: ScriptConfig): void {
@@ -2033,14 +2339,25 @@ function createSessionSnapshot(profileId: string): BotSessionSnapshot {
   };
 }
 
+const DEFAULT_INVENTORY_WINDOW: InventoryWindowLayout = {
+  kind: 'inventory',
+  title: null,
+  totalSlots: 0,
+  inventoryStart: 9,
+  hotbarStart: 36,
+  craftingResultSlot: 0
+};
+
 function emptyInventorySnapshot(): LiveInventorySnapshot {
   return {
     updatedAt: null,
     heldItem: null,
+    selectedHotbar: null,
     armor: [],
     crafting: [],
     storage: [],
     slots: [],
+    window: { ...DEFAULT_INVENTORY_WINDOW },
     openWindowTitle: null
   };
 }
@@ -2074,10 +2391,12 @@ function cloneInventorySnapshot(snapshot: LiveInventorySnapshot): LiveInventoryS
   return {
     updatedAt: snapshot.updatedAt,
     heldItem: snapshot.heldItem ? { ...snapshot.heldItem } : null,
+    selectedHotbar: snapshot.selectedHotbar,
     armor: snapshot.armor.map((item) => ({ ...item })),
     crafting: snapshot.crafting.map((item) => ({ ...item })),
     storage: snapshot.storage.map((item) => ({ ...item })),
     slots: snapshot.slots.map((item) => ({ ...item })),
+    window: { ...(snapshot.window ?? DEFAULT_INVENTORY_WINDOW) },
     openWindowTitle: snapshot.openWindowTitle
   };
 }
@@ -2129,6 +2448,7 @@ function normalizeSettings(settings?: Partial<AppSettings>): AppSettings {
     confirmStopAll: settings?.confirmStopAll ?? DEFAULT_SETTINGS.confirmStopAll,
     showChatTimestamps: settings?.showChatTimestamps ?? DEFAULT_SETTINGS.showChatTimestamps,
     compactDensity: Boolean(settings?.compactDensity),
+    minimizeToTrayOnClose: settings?.minimizeToTrayOnClose ?? DEFAULT_SETTINGS.minimizeToTrayOnClose,
     defaultReconnect: {
       enabled: reconnect?.enabled ?? DEFAULT_SETTINGS.defaultReconnect.enabled,
       maxAttempts: clamp(Number(reconnect?.maxAttempts), 0, 999, DEFAULT_SETTINGS.defaultReconnect.maxAttempts),
@@ -2148,19 +2468,20 @@ function formatError(error: unknown): string {
   return String(error);
 }
 
-function stringifyReason(reason: unknown): string {
+export function stringifyReason(reason: unknown): string {
   const componentText = stringifyMinecraftText(reason);
   if (componentText) return componentText;
-  if (typeof reason === 'string') return reason;
-  try {
-    return JSON.stringify(reason);
-  } catch {
-    return String(reason);
+  // Never surface raw JSON or "[object Object]" to the user: when a component carries
+  // no readable text, fall back to a plain human-readable description.
+  if (typeof reason === 'string') {
+    const stripped = stripSectionCodes(reason).trim();
+    return stripped || 'Disconnected';
   }
+  return 'Disconnected';
 }
 
-function stringifyMinecraftText(reason: unknown): string | null {
-  const text = collectMinecraftText(parseMinecraftJson(reason)).trim();
+export function stringifyMinecraftText(reason: unknown): string | null {
+  const text = collectMinecraftText(parseMinecraftJson(reason)).replace(/[ \t\r\n]+/g, ' ').trim();
   return text || null;
 }
 
@@ -2175,35 +2496,100 @@ function parseMinecraftJson(reason: unknown): unknown {
   }
 }
 
+// Minecraft formatting uses the section sign (U+00A7) followed by a single code char
+// (colors, bold/italic, and the §x§r§r… hex sequences). Strip every §-sequence so raw
+// color/format codes never reach the chat console, kick reasons, or window titles.
+function stripSectionCodes(value: string): string {
+  return value.replace(/§./g, '').replace(/§/g, '');
+}
+
+// Friendly text for the disconnect/auth translate keys servers send most often. Without
+// the client language table we can't resolve arbitrary keys, so we cover the common ones
+// and humanize anything else — the goal is to never show a raw "foo.bar.baz" key.
+const KNOWN_TRANSLATIONS: Record<string, string> = {
+  'multiplayer.disconnect.server_full': 'Server is full',
+  'multiplayer.disconnect.kicked': 'Kicked by an operator',
+  'multiplayer.disconnect.banned': 'You are banned from this server',
+  'multiplayer.disconnect.banned.reason': 'Banned: %s',
+  'multiplayer.disconnect.banned.expiration': 'Banned until %s',
+  'multiplayer.disconnect.idling': 'Kicked for idling',
+  'multiplayer.disconnect.duplicate_login': 'Logged in from another location',
+  'multiplayer.disconnect.server_shutdown': 'Server closed',
+  'multiplayer.disconnect.not_whitelisted': 'Not whitelisted on this server',
+  'multiplayer.disconnect.outdated_client': 'Outdated client (%s)',
+  'multiplayer.disconnect.outdated_server': 'Outdated server (%s)',
+  'multiplayer.disconnect.unverified_username': 'Could not verify username',
+  'multiplayer.disconnect.authservers_down': 'Authentication servers are down',
+  'multiplayer.disconnect.slow_login': 'Took too long to log in',
+  'multiplayer.disconnect.flying': 'Flying is not allowed on this server',
+  'multiplayer.disconnect.generic': 'Disconnected',
+  'disconnect.timeout': 'Connection timed out',
+  'disconnect.kicked': 'Kicked',
+  'disconnect.spam': 'Kicked for spamming',
+  'disconnect.closed': 'Connection closed',
+  'disconnect.lost': 'Connection lost',
+  'disconnect.genericReason': '%s',
+  'chat.type.text': '<%s> %s',
+  'chat.type.announcement': '[%s] %s'
+};
+
+// Substitute %s (sequential) and %n$s (indexed) placeholders, like Minecraft's templates.
+function applyTranslationTemplate(template: string, args: string[]): string {
+  let next = 0;
+  return template
+    .replace(/%(\d+)\$s/g, (_match, index: string) => args[Number(index) - 1] ?? '')
+    .replace(/%s/g, () => args[next++] ?? '');
+}
+
+// Turn a dotted identifier (translate / keybind id) into readable words: the last
+// segment, separators to spaces, first letter capitalized. e.g. server_full -> "Server full".
+function humanizeIdentifier(value: string): string {
+  const last = value.split('.').pop() ?? value;
+  const words = last.replace(/[._-]+/g, ' ').trim();
+  if (!words) return value;
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function renderTranslate(key: string, args: string[], fallback: unknown): string {
+  const template = KNOWN_TRANSLATIONS[key] ?? (typeof fallback === 'string' ? fallback : null);
+  if (template) return applyTranslationTemplate(stripSectionCodes(template), args).trim();
+  const humanized = humanizeIdentifier(key);
+  const extras = args.map((arg) => arg.trim()).filter(Boolean);
+  return extras.length ? `${humanized}: ${extras.join(' ')}` : humanized;
+}
+
+// Flatten a Minecraft chat component (object, JSON, or string) into plain display text.
+// Handles text/extra, translate (+with/fallback), and score/selector/keybind shapes, and
+// always strips section-sign color codes.
 function collectMinecraftText(value: unknown): string {
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) return value.map(collectMinecraftText).filter(Boolean).join('');
+  if (typeof value === 'string') return stripSectionCodes(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map(collectMinecraftText).join('');
   if (!value || typeof value !== 'object') return '';
 
   const component = value as Record<string, unknown>;
-  const parts: string[] = [];
-  if (
-    typeof component.text === 'string' ||
-    typeof component.text === 'number' ||
-    typeof component.text === 'boolean'
-  ) {
-    parts.push(String(component.text));
-  }
-  if (Array.isArray(component.extra)) {
-    parts.push(...component.extra.map(collectMinecraftText));
+  let text = '';
+
+  if (typeof component.text === 'string') text += stripSectionCodes(component.text);
+  else if (typeof component.text === 'number' || typeof component.text === 'boolean') text += String(component.text);
+
+  if (!text && typeof component.translate === 'string') {
+    const args = Array.isArray(component.with) ? component.with.map(collectMinecraftText) : [];
+    text += renderTranslate(component.translate, args, component.fallback);
   }
 
-  const plainText = parts.join('').trim();
-  if (plainText) return parts.join('');
-
-  if (Array.isArray(component.with)) {
-    const args = component.with.map(collectMinecraftText).filter(Boolean);
-    if (args.length > 0) return args.join(' ');
+  if (!text && component.score && typeof component.score === 'object') {
+    const score = component.score as Record<string, unknown>;
+    if (typeof score.value === 'string' || typeof score.value === 'number') text += String(score.value);
+    else if (typeof score.name === 'string') text += stripSectionCodes(score.name);
   }
 
-  if (typeof component.fallback === 'string' && component.fallback.trim()) return component.fallback;
-  if (typeof component.translate === 'string' && component.translate.trim()) return component.translate;
-  return '';
+  if (!text && typeof component.selector === 'string') text += stripSectionCodes(component.selector);
+  if (!text && typeof component.keybind === 'string') text += humanizeIdentifier(component.keybind);
+
+  if (Array.isArray(component.extra)) text += component.extra.map(collectMinecraftText).join('');
+
+  return text;
 }
 
 function cloneProfile(profile: AccountProfile): AccountProfile {
@@ -2279,7 +2665,10 @@ function cloneModules(modules: BotModulesConfig): BotModulesConfig {
       from: { ...modules.area.from },
       to: { ...modules.area.to }
     },
-    generator: { ...modules.generator },
+    generator: {
+      ...modules.generator,
+      slots: modules.generator.slots.map((slot) => ({ ...slot }))
+    },
     script: {
       ...modules.script,
       steps: modules.script.steps.map((step) => ({ ...step })),
@@ -2343,24 +2732,37 @@ function normalizeAreaOperation(config?: Partial<AreaOperationConfig>): AreaOper
   return {
     enabled: Boolean(config?.enabled),
     mode,
+    coords: config?.coords === 'absolute' ? 'absolute' : 'relative',
     from: normalizePosition(config?.from, DEFAULT_MODULES.area.from),
     to: normalizePosition(config?.to, DEFAULT_MODULES.area.to),
     fillBlock: config?.fillBlock?.trim() || DEFAULT_MODULES.area.fillBlock,
+    hollow: config?.hollow ?? DEFAULT_MODULES.area.hollow,
+    walk: config?.walk ?? DEFAULT_MODULES.area.walk,
     actionDelayMs: clamp(Number(config?.actionDelayMs), 100, 30000, DEFAULT_MODULES.area.actionDelayMs)
   };
 }
 
+const MAX_GENERATOR_SLOTS = 16;
+
+function normalizeGeneratorSlots(slots: GeneratorMineConfig['slots'] | undefined): GeneratorSlot[] {
+  if (!Array.isArray(slots)) return DEFAULT_MODULES.generator.slots.map((slot) => ({ ...slot }));
+  const normalized = slots.slice(0, MAX_GENERATOR_SLOTS).map((slot, index) => ({
+    id: typeof slot?.id === 'string' && slot.id ? slot.id : `gen-${index}`,
+    x: clamp(Number(slot?.x), -8, 8, 0),
+    y: clamp(Number(slot?.y), -8, 8, 0),
+    z: clamp(Number(slot?.z), -8, 8, 0)
+  }));
+  return normalized;
+}
+
 function normalizeGeneratorMine(config?: Partial<GeneratorMineConfig>): GeneratorMineConfig {
-  const direction = config?.direction;
   return {
     enabled: Boolean(config?.enabled),
-    mode: config?.mode === 'four_way' ? 'four_way' : 'forward',
-    direction:
-      direction === 'north' || direction === 'south' || direction === 'east' || direction === 'west'
-        ? direction
-        : DEFAULT_MODULES.generator.direction,
-    depth: clamp(Number(config?.depth), 1, 64, DEFAULT_MODULES.generator.depth),
-    actionDelayMs: clamp(Number(config?.actionDelayMs), 100, 30000, DEFAULT_MODULES.generator.actionDelayMs)
+    slots: normalizeGeneratorSlots(config?.slots),
+    blockFilter: config?.blockFilter?.trim() ?? DEFAULT_MODULES.generator.blockFilter,
+    walk: config?.walk ?? DEFAULT_MODULES.generator.walk,
+    actionDelayMs: clamp(Number(config?.actionDelayMs), 100, 30000, DEFAULT_MODULES.generator.actionDelayMs),
+    regenDelayMs: clamp(Number(config?.regenDelayMs), 0, 120000, DEFAULT_MODULES.generator.regenDelayMs)
   };
 }
 
@@ -2553,36 +2955,73 @@ function itemLabel(item: InventoryItemLike): string {
 }
 
 function captureInventory(bot: BotLike): LiveInventorySnapshot {
-  const slots = (bot.inventory?.slots ?? [])
-    .map((item, slot) => itemSnapshot(item, slot))
+  const registry = bot.registry;
+  // Armor / crafting / held are player-inventory concepts and stay valid even while a container is open.
+  const playerSlots = (bot.inventory?.slots ?? [])
+    .map((item, slot) => itemSnapshot(item, slot, registry))
     .filter((item): item is InventoryItemSnapshot => Boolean(item));
   const heldSlot = typeof bot.quickBarSlot === 'number' ? 36 + bot.quickBarSlot : null;
-  const heldItem = itemSnapshot(bot.heldItem ?? (heldSlot == null ? null : bot.inventory?.slots?.[heldSlot]), heldSlot ?? -1);
-  const windowSlots = (bot.currentWindow?.slots ?? [])
-    .map((item, slot) => itemSnapshot(item, slot))
+  const heldItem = itemSnapshot(
+    bot.heldItem ?? (heldSlot == null ? null : bot.inventory?.slots?.[heldSlot]),
+    heldSlot ?? -1,
+    registry
+  );
+
+  // The interactive grid is backed by whichever window is currently open. Slot indices in this
+  // array are the real window indices that moveSlotItem / clickWindow operate on.
+  const container = bot.currentWindow ?? null;
+  const activeWindow: WindowLike = container ?? bot.inventory ?? {};
+  const activeSlots = (activeWindow.slots ?? [])
+    .map((item, slot) => itemSnapshot(item, slot, registry))
     .filter((item): item is InventoryItemSnapshot => Boolean(item));
+
+  const window: InventoryWindowLayout = {
+    kind: container ? 'container' : 'inventory',
+    title: stringifyMinecraftText(activeWindow.title ?? null),
+    totalSlots: activeWindow.slots?.length ?? (container ? activeSlots.length : 46),
+    inventoryStart: typeof activeWindow.inventoryStart === 'number' ? activeWindow.inventoryStart : 9,
+    hotbarStart: typeof activeWindow.hotbarStart === 'number' ? activeWindow.hotbarStart : 36,
+    craftingResultSlot: typeof activeWindow.craftingResultSlot === 'number' ? activeWindow.craftingResultSlot : 0
+  };
+
   return {
     updatedAt: new Date().toISOString(),
     heldItem,
-    armor: slots.filter((item) => item.slot >= 5 && item.slot <= 8),
-    crafting: slots.filter((item) => item.slot >= 1 && item.slot <= 4),
-    storage: windowSlots.length > 0 ? windowSlots : slots.filter((item) => item.slot >= 9),
-    slots,
+    selectedHotbar: typeof bot.quickBarSlot === 'number' ? bot.quickBarSlot : null,
+    armor: playerSlots.filter((item) => item.slot >= 5 && item.slot <= 8),
+    crafting: playerSlots.filter((item) => item.slot >= 1 && item.slot <= 4),
+    storage: container ? activeSlots : playerSlots.filter((item) => item.slot >= 9),
+    slots: activeSlots,
+    window,
     openWindowTitle: stringifyMinecraftText(bot.currentWindow?.title ?? null)
   };
 }
 
 function itemSnapshot(
   item: InventoryItemLike | null | undefined,
-  fallbackSlot: number | null
+  fallbackSlot: number | null,
+  registry?: BotRegistryLike
 ): InventoryItemSnapshot | null {
   if (!item || !item.name) return null;
   return {
     slot: typeof item.slot === 'number' ? item.slot : fallbackSlot ?? -1,
     name: item.name,
     displayName: item.displayName ?? item.name,
-    count: Math.max(1, Number(item.count) || 1)
+    count: Math.max(1, Number(item.count) || 1),
+    equipDestination: equipDestinationFor(item.name),
+    edible: Boolean(findFoodData(item, registry))
   };
+}
+
+/** Natural equip target inferred from the item name; everything holdable defaults to the hand. */
+function equipDestinationFor(rawName: string): EquipDestination {
+  const name = rawName.toLowerCase();
+  if (name.endsWith('_helmet') || name === 'carved_pumpkin') return 'head';
+  if (name.endsWith('_chestplate') || name === 'elytra') return 'torso';
+  if (name.endsWith('_leggings')) return 'legs';
+  if (name.endsWith('_boots')) return 'feet';
+  if (name === 'shield') return 'off-hand';
+  return 'hand';
 }
 
 function botPosition(bot: BotLike): PositionSnapshot | null {
@@ -2593,6 +3032,120 @@ function botPosition(bot: BotLike): PositionSnapshot | null {
     y: Math.floor(position.y),
     z: Math.floor(position.z)
   };
+}
+
+/** Human-friendly comparator so 'alice' and 'Bob' sort together regardless of case. */
+function caseInsensitive(a: string, b: string): number {
+  return a.toLowerCase().localeCompare(b.toLowerCase());
+}
+
+/** Case-insensitively de-duplicate while preserving first-seen order. */
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
+}
+
+/** Distil the raw `declare_commands` packet into a flat node array we can walk. */
+function parseCommandNodes(packet: unknown): ParsedCommandNode[] {
+  const nodes = (packet as { nodes?: unknown })?.nodes;
+  if (!Array.isArray(nodes)) return [];
+  return nodes.map((node) => {
+    const flags = (node as { flags?: { command_node_type?: unknown } })?.flags;
+    const extra = (node as { extraNodeData?: { name?: unknown } })?.extraNodeData;
+    const children = (node as { children?: unknown })?.children;
+    const redirect = (node as { redirectNode?: unknown })?.redirectNode;
+    return {
+      type: typeof flags?.command_node_type === 'number' ? flags.command_node_type : 0,
+      name: typeof extra?.name === 'string' ? extra.name : null,
+      children: Array.isArray(children) ? children.filter((child): child is number => typeof child === 'number') : [],
+      redirect: typeof redirect === 'number' ? redirect : null
+    };
+  });
+}
+
+/** Children of a node, following a redirect when the node defers to another command. */
+function commandNodeChildren(nodes: ParsedCommandNode[], node: ParsedCommandNode): number[] {
+  const target = node.redirect !== null ? nodes[node.redirect] : node;
+  return target?.children ?? [];
+}
+
+/** Top-level command names (literals directly under the root), without the leading slash. */
+function topLevelCommands(session: ManagedSession): string[] {
+  const nodes = session.commandNodes;
+  if (!nodes?.length) return [];
+  const root = nodes[session.commandRoot] ?? nodes[0];
+  if (!root) return [];
+  const names: string[] = [];
+  for (const index of commandNodeChildren(nodes, root)) {
+    const node = nodes[index];
+    if (node?.type === 1 && node.name) names.push(node.name);
+  }
+  return names;
+}
+
+/**
+ * Literal sub-commands reachable after the already-typed tokens. Walks the command
+ * graph token-by-token; bails out the moment a token lands on an argument node (a
+ * value we can't enumerate) so we never guess past a free-form placeholder.
+ */
+function nestedCommandLiterals(session: ManagedSession, tokens: string[]): string[] {
+  const nodes = session.commandNodes;
+  if (!nodes?.length) return [];
+  let current = nodes[session.commandRoot] ?? nodes[0];
+  if (!current) return [];
+  const completed = tokens.slice(0, -1);
+  for (let i = 0; i < completed.length; i++) {
+    const token = (i === 0 ? completed[i].replace(/^\//, '') : completed[i]).toLowerCase();
+    if (!token) continue;
+    let next: ParsedCommandNode | null = null;
+    for (const index of commandNodeChildren(nodes, current)) {
+      const node = nodes[index];
+      if (node?.type === 1 && node.name?.toLowerCase() === token) {
+        next = node;
+        break;
+      }
+    }
+    if (!next) return [];
+    current = next;
+  }
+  const literals: string[] = [];
+  for (const index of commandNodeChildren(nodes, current)) {
+    const node = nodes[index];
+    if (node?.type === 1 && node.name) literals.push(node.name);
+  }
+  return literals;
+}
+
+/** Online player names (excluding the bot itself), used to complete command arguments. */
+function onlinePlayerNames(session: ManagedSession): string[] {
+  const players = session.bot?.players;
+  if (!players || typeof players !== 'object') return [];
+  // Fall back to the profile username for the brief window before mineflayer resolves
+  // bot.username, so the bot never suggests its own name.
+  const own = (session.bot?.username ?? session.profile.username)?.toLowerCase();
+  return Object.keys(players).filter((name) => name && name.toLowerCase() !== own);
+}
+
+/** Slash commands the user configured on this profile (quick commands, scripts, startup flow). */
+function knownCommands(profile: AccountProfile): string[] {
+  const steps: ScriptStep[] = [
+    ...(profile.modules?.script?.quickCommands ?? []),
+    ...(profile.modules?.script?.steps ?? []),
+    ...(profile.startup?.flowCommands ?? [])
+  ];
+  const commands: string[] = [];
+  for (const step of steps) {
+    const command = step?.command?.trim();
+    if (command && command.startsWith('/')) commands.push(command);
+  }
+  return commands;
 }
 
 /**
@@ -2662,6 +3215,37 @@ function cactusMaterialNeeds(plan: OperationWorkItem[]): Record<string, number> 
   return needs;
 }
 
+// Walk a 3D box for an area operation. Layers are ordered by mode (mine works
+// top-down so falling blocks don't bury the bot and a floor stays underfoot;
+// fill works bottom-up so each placed block rests on support) and `hollow`
+// keeps only the outer shell so you can carve rooms or build walls.
+export function areaPositions(
+  a: PositionSnapshot,
+  b: PositionSnapshot,
+  mode: 'mine' | 'fill',
+  hollow: boolean
+): PositionSnapshot[] {
+  const minX = Math.min(a.x, b.x);
+  const maxX = Math.max(a.x, b.x);
+  const minY = Math.min(a.y, b.y);
+  const maxY = Math.max(a.y, b.y);
+  const minZ = Math.min(a.z, b.z);
+  const maxZ = Math.max(a.z, b.z);
+  const ys: number[] = [];
+  for (let y = minY; y <= maxY; y += 1) ys.push(y);
+  if (mode === 'mine') ys.reverse();
+  const positions: PositionSnapshot[] = [];
+  for (const y of ys) {
+    for (let x = minX; x <= maxX; x += 1) {
+      for (let z = minZ; z <= maxZ; z += 1) {
+        if (hollow && x > minX && x < maxX && y > minY && y < maxY && z > minZ && z < maxZ) continue;
+        positions.push({ x, y, z });
+      }
+    }
+  }
+  return positions;
+}
+
 function positionsInBox(a: PositionSnapshot, b: PositionSnapshot): PositionSnapshot[] {
   const minX = Math.min(a.x, b.x);
   const maxX = Math.max(a.x, b.x);
@@ -2688,30 +3272,12 @@ function addPosition(a: PositionSnapshot, b: PositionSnapshot): PositionSnapshot
   };
 }
 
+function roundPosition(position: PositionSnapshot): PositionSnapshot {
+  return { x: Math.round(position.x), y: Math.round(position.y), z: Math.round(position.z) };
+}
+
 function toVec3(position: PositionSnapshot): Vec3 {
   return new Vec3(position.x, position.y, position.z);
-}
-
-function scalePosition(position: PositionSnapshot, scale: number): PositionSnapshot {
-  return {
-    x: position.x * scale,
-    y: position.y * scale,
-    z: position.z * scale
-  };
-}
-
-function directionVector(direction: GeneratorMineConfig['direction']): PositionSnapshot {
-  switch (direction) {
-    case 'south':
-      return { x: 0, y: 0, z: 1 };
-    case 'east':
-      return { x: 1, y: 0, z: 0 };
-    case 'west':
-      return { x: -1, y: 0, z: 0 };
-    case 'north':
-    default:
-      return { x: 0, y: 0, z: -1 };
-  }
 }
 
 function formatPosition(position: PositionSnapshot): string {
@@ -2880,8 +3446,13 @@ function mergeStats(current: Record<string, number>, delta: Record<string, numbe
 
 function redactSensitiveText(value: string): string {
   return value
-    .replace(/(\/(?:login|register)\s+)(\S+)(?:\s+\S+)?/gi, '$1******')
-    .replace(/(password|token|webhook)=\S+/gi, '$1=******');
+    // Common auth commands and their cracked-server aliases (AuthMe etc.): /login, /l,
+    // /register, /reg, /auth, /changepassword … <password> [confirm].
+    .replace(
+      /(\/(?:login|register|reg|auth|changepassword|changepass|password|passwd|pass|l)\s+)(\S+)(?:\s+\S+)?/gi,
+      '$1******'
+    )
+    .replace(/(password|passwd|token|webhook|secret)=\S+/gi, '$1=******');
 }
 
 function discordRuntimeLabel(runtime: DiscordRuntime): string {

@@ -7,6 +7,7 @@ import type { BotManager } from '../bot/botManager.js';
 import type {
   AppSettings,
   DiscordRuntimeInput,
+  InventoryActionRequest,
   LauncherState,
   OperationKind,
   OperationStartRequest,
@@ -33,6 +34,10 @@ const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 3000;
 const PORT_SCAN_LIMIT = 12;
 const MAX_JSON_BODY_BYTES = 1024 * 1024;
+// Comment-only keep-alive cadence so idle SSE connections survive proxy/socket idle timeouts.
+const SSE_HEARTBEAT_MS = 25000;
+// Upper bound on how long a graceful close waits for sockets to drain before forcing on.
+const SERVER_CLOSE_TIMEOUT_MS = 3000;
 
 const MIME_TYPES: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -64,7 +69,12 @@ export async function startLocalWebServer(options: LocalWebServerOptions): Promi
         host,
         port: actualPort,
         url: `http://${host}:${actualPort}`,
-        close: () => closeServer(localServer.server)
+        close: async () => {
+          // End long-lived SSE connections first; otherwise server.close() would wait
+          // forever for them to drain and the app could hang on quit.
+          localServer.endClients();
+          await closeServer(localServer.server);
+        }
       };
     } catch (error) {
       lastError = error;
@@ -78,12 +88,23 @@ export async function startLocalWebServer(options: LocalWebServerOptions): Promi
   throw lastError instanceof Error ? lastError : new Error('Local web dashboard port is unavailable.');
 }
 
-function createLocalHttpServer(options: LocalWebServerOptions): { server: Server; dispose: () => void } {
+function createLocalHttpServer(options: LocalWebServerOptions): {
+  server: Server;
+  dispose: () => void;
+  endClients: () => void;
+} {
   const clients = new Set<ServerResponse>();
   const publishState = (state: LauncherState) => {
     const frame = `event: state\ndata: ${JSON.stringify(state)}\n\n`;
     for (const client of clients) {
-      client.write(frame);
+      try {
+        client.write(frame);
+      } catch {
+        // Writing to a half-open socket throws; drop the dead client so the set never
+        // grows unbounded and one bad connection can't stall the whole broadcast.
+        clients.delete(client);
+        client.end();
+      }
     }
   };
 
@@ -99,16 +120,20 @@ function createLocalHttpServer(options: LocalWebServerOptions): { server: Server
     });
   });
 
-  const dispose = () => {
-    options.manager.off('state', publishState);
+  const endClients = () => {
     for (const client of clients) {
       client.end();
     }
     clients.clear();
   };
 
+  const dispose = () => {
+    options.manager.off('state', publishState);
+    endClients();
+  };
+
   server.once('close', dispose);
-  return { server, dispose };
+  return { server, dispose, endClients };
 }
 
 async function handleRequest(
@@ -169,7 +194,21 @@ async function handleApiRequest(
     });
     response.write(`event: state\ndata: ${JSON.stringify(options.manager.getState())}\n\n`);
     clients.add(response);
-    request.on('close', () => clients.delete(response));
+    const heartbeat = setInterval(() => {
+      try {
+        response.write(': keep-alive\n\n');
+      } catch {
+        // The close/error handlers below remove the client; nothing else to do here.
+      }
+    }, SSE_HEARTBEAT_MS);
+    if (typeof heartbeat.unref === 'function') heartbeat.unref();
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      clients.delete(response);
+    };
+    request.on('close', cleanup);
+    response.on('close', cleanup);
+    response.on('error', cleanup);
     return;
   }
 
@@ -220,6 +259,12 @@ async function handleApiRequest(
   if (request.method === 'POST' && parts.length === 4 && parts[0] === 'api' && parts[1] === 'bots' && parts[3] === 'quick-script') {
     const body = await readJsonBody<{ command?: string }>(request);
     sendJson(request, response, 200, await options.manager.runQuickScript(parts[2], body.command ?? ''));
+    return;
+  }
+
+  if (request.method === 'POST' && parts.length === 4 && parts[0] === 'api' && parts[1] === 'bots' && parts[3] === 'inventory') {
+    const body = await readJsonBody<InventoryActionRequest>(request);
+    sendJson(request, response, 200, await options.manager.inventoryAction(parts[2], body));
     return;
   }
 
@@ -319,6 +364,11 @@ async function findStaticFile(staticDir: string, requestedPath: string): Promise
     // Fall through to the SPA index fallback.
   }
 
+  // Only fall back to the SPA shell for navigation requests (no file extension). A
+  // missing asset (.js/.css/.png…) must 404 rather than return HTML with a 200, which
+  // the browser would otherwise fail to parse as a module with an opaque error.
+  if (path.extname(normalizedRequestedPath)) return null;
+
   const indexPath = path.join(normalizedStaticDir, 'index.html');
   try {
     const indexInfo = await stat(indexPath);
@@ -387,8 +437,11 @@ function setCorsHeaders(request: IncomingMessage, response: ServerResponse): voi
 
 function securityHeaders(): Record<string, string> {
   return {
+    // Mirror the packaged renderer's CSP (index.html) so the browser dashboard keeps its
+    // inline styles and data: assets; the header CSP would otherwise fall back to
+    // default-src 'self' and silently break the UI when served over HTTP.
     'Content-Security-Policy':
-      "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; connect-src 'self' http://127.0.0.1:* http://localhost:*",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:*; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff'
   };
@@ -406,7 +459,9 @@ function isAllowedOrigin(origin: string | string[] | undefined): boolean {
 }
 
 function isLocalHostHeader(host: string | undefined): boolean {
-  if (!host) return true;
+  // A missing Host header is malformed for HTTP/1.1 and never sent by browsers; treat
+  // it as untrusted so a header-less client can't slip past the loopback gate.
+  if (!host) return false;
   return isLocalHostname(hostnameFromHostHeader(host));
 }
 
@@ -444,13 +499,19 @@ function closeServer(server: Server): Promise<void> {
       resolve();
       return;
     }
-    server.close((error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
+      if (error) reject(error);
+      else resolve();
+    };
+    // Never let a stuck socket keep the app from quitting: resolve anyway after a grace
+    // period so the shutdown path always completes.
+    const watchdog = setTimeout(() => finish(), SERVER_CLOSE_TIMEOUT_MS);
+    if (typeof watchdog.unref === 'function') watchdog.unref();
+    server.close((error) => finish(error ?? undefined));
   });
 }
 

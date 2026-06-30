@@ -1,6 +1,6 @@
 {
   "name": "afk-launcher",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "ChunkKeeper desktop launcher for authorized Minecraft Java AFK sessions.",
   "author": "smojka",
   "type": "module",
@@ -31,6 +31,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "mineflayer": "^4.33.0",
     "mineflayer-pathfinder": "^2.4.5",
     "socks": "^2.8.9",
@@ -71,6 +72,13 @@
     "appId": "com.smojka.chunkkeeper",
     "productName": "ChunkKeeper",
     "compression": "maximum",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Smojka",
+        "repo": "awp-afk-launcher"
+      }
+    ],
     "afterPack": "scripts/after-pack-prune.mjs",
     "directories": {
       "output": "release"
@@ -79,6 +87,8 @@
       "dist/**/*",
       "dist-electron/**/*",
       "package.json",
+      "build/icon.png",
+      "build/icon.ico",
       "!**/*.map",
       "!**/*.test.*",
       "!node_modules/**/.github/**/*",
@@ -114,7 +124,7 @@
       ],
       "icon": "build/icon.ico",
       "requestedExecutionLevel": "asInvoker",
-      "verifyUpdateCodeSignature": true,
+      "verifyUpdateCodeSignature": false,
       "artifactName": "ChunkKeeper-${version}-${arch}.${ext}"
     },
     "nsis": {

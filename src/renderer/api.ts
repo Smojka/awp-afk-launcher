@@ -1,11 +1,13 @@
 import type {
   AppSettings,
   DiscordRuntimeInput,
+  InventoryActionRequest,
   LauncherApi,
   LauncherState,
   OperationKind,
   OperationStartRequest,
-  SaveProfileInput
+  SaveProfileInput,
+  UpdateCheckResult
 } from '../shared/types';
 
 const DEFAULT_LOCAL_WEB_PORT = '3000';
@@ -112,6 +114,11 @@ function createHttpLauncherApi(baseUrl: string): LauncherApi {
         method: 'POST',
         body: JSON.stringify({ command })
       }),
+    inventoryAction: async (profileId: string, inventoryRequest: InventoryActionRequest) =>
+      request<LauncherState>(`/api/bots/${encodeURIComponent(profileId)}/inventory`, {
+        method: 'POST',
+        body: JSON.stringify(inventoryRequest)
+      }),
     completeChat: async (profileId: string, partial: string) => {
       const result = await request<{ completions: string[] }>(`/api/bots/${encodeURIComponent(profileId)}/complete`, {
         method: 'POST',
@@ -147,7 +154,23 @@ function createHttpLauncherApi(baseUrl: string): LauncherApi {
           eventSource = null;
         }
       };
-    }
+    },
+    // Auto-update is a desktop-app concern; the browser dashboard reports "no update"
+    // and never emits update events.
+    checkForUpdates: async (): Promise<UpdateCheckResult> => ({
+      updateAvailable: false,
+      currentVersion: '',
+      latestVersion: '',
+      notes: '',
+      htmlUrl: '',
+      assetUrl: null,
+      installMode: 'manual'
+    }),
+    downloadUpdate: async () => undefined,
+    onUpdateAvailable: () => () => undefined,
+    onUpdateProgress: () => () => undefined,
+    onUpdateDownloaded: () => () => undefined,
+    onUpdateError: () => () => undefined
   };
 }
 

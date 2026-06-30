@@ -179,6 +179,7 @@ jobs:
           path: |
             release/*.exe
             release/*.exe.blockmap
+            release/latest.yml
           if-no-files-found: error
 
       - name: Upload to GitHub Release
@@ -186,4 +187,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
-        run: gh release upload "$TAG_NAME" release/*.exe release/*.exe.blockmap --clobber
+        run: gh release upload "$TAG_NAME" release/*.exe release/*.exe.blockmap release/latest.yml --clobber

@@ -55,7 +55,7 @@ function stripProfileSecrets(profile: AccountProfile): AccountProfile {
     },
     routine: {
       ...profile.routine,
-      chatMessages: [...profile.routine.chatMessages]
+      chatMessages: [...(profile.routine.chatMessages ?? [])]
     },
     reconnect: { ...profile.reconnect },
     proxy: profile.proxy ? { ...profile.proxy, password: '' } : profile.proxy,
@@ -71,15 +71,19 @@ function stripModuleSecrets(modules: BotModulesConfig): BotModulesConfig {
       from: { ...modules.area.from },
       to: { ...modules.area.to }
     },
+    generator: {
+      ...modules.generator,
+      slots: (modules.generator.slots ?? []).map((slot) => ({ ...slot }))
+    },
     script: {
       ...modules.script,
-      steps: modules.script.steps.map((step) => ({ ...step })),
-      quickCommands: modules.script.quickCommands.map((step) => ({ ...step }))
+      steps: (modules.script.steps ?? []).map((step) => ({ ...step })),
+      quickCommands: (modules.script.quickCommands ?? []).map((step) => ({ ...step }))
     },
     discord: { ...modules.discord },
     autoResponse: {
       ...modules.autoResponse,
-      rules: modules.autoResponse.rules.map((rule) => ({ ...rule }))
+      rules: (modules.autoResponse.rules ?? []).map((rule) => ({ ...rule }))
     }
   };
 }

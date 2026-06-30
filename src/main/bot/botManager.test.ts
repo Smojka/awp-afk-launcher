@@ -1,7 +1,15 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BotManager, cactusFarmPlan, cropBuildPlan, type MineflayerFactory } from './botManager';
+import {
+  BotManager,
+  areaPositions,
+  cactusFarmPlan,
+  cropBuildPlan,
+  stringifyReason,
+  stringifyMinecraftText,
+  type MineflayerFactory
+} from './botManager';
 import type { CactusFarmConfig, CropFarmConfig } from '../../shared/types';
 import type { AccountProfile } from '../../shared/types';
 import type { ProfileDocument } from '../storage/profileStore';
@@ -41,9 +49,26 @@ class FakeBot extends EventEmitter {
   food = 18;
   player = { ping: 42 };
   game = { dimension: 'overworld' };
-  players = { one: {}, two: {} };
+  players: Record<string, unknown> = { one: {}, two: {} };
   entity = { position: { x: 12.4, y: 65, z: -9.8 }, yaw: 0.2, pitch: -0.1 };
-  inventory = { slots: new Array(46), items: () => [] as Array<{ type?: number; name: string; displayName?: string }> };
+  inventory: {
+    slots: Array<{ slot?: number; type?: number; metadata?: number; name?: string; displayName?: string; count?: number } | null>;
+    items: () => Array<{ type?: number; name: string; displayName?: string }>;
+    inventoryStart?: number;
+    hotbarStart?: number;
+    craftingResultSlot?: number;
+  } = { slots: new Array(46).fill(null), items: () => [], inventoryStart: 9, hotbarStart: 36, craftingResultSlot: 0 };
+  quickBarSlot = 0;
+  heldItem: { name?: string; displayName?: string } | null = null;
+  currentWindow:
+    | {
+        title?: unknown;
+        slots?: Array<{ slot?: number; type?: number; metadata?: number; name?: string; displayName?: string; count?: number } | null>;
+        inventoryStart?: number;
+        hotbarStart?: number;
+        craftingResultSlot?: number;
+      }
+    | null = null;
   chat = vi.fn();
   quit = vi.fn(() => this.emit('end'));
   setControlState = vi.fn();
@@ -51,6 +76,15 @@ class FakeBot extends EventEmitter {
   swingArm = vi.fn();
   respawn = vi.fn();
   equip = vi.fn(async () => undefined);
+  unequip = vi.fn(async () => undefined);
+  toss = vi.fn(async () => undefined);
+  tossStack = vi.fn(async () => undefined);
+  moveSlotItem = vi.fn(async () => undefined);
+  clickWindow = vi.fn(async () => undefined);
+  setQuickBarSlot = vi.fn((slot: number) => {
+    this.quickBarSlot = slot;
+  });
+  deactivateItem = vi.fn();
   consume = vi.fn(async () => {
     this.food = 20;
   });
@@ -817,6 +851,90 @@ describe('BotManager', () => {
     expect(manager.getState().sessions[profile.id].tabCompletions).toEqual(['/spawn', '/home']);
   });
 
+  it('completes command names from the server command graph without a server round-trip', async () => {
+    const fakeBot = new FakeBot();
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+    // Minecraft 1.13+ announces every command up front via declare_commands.
+    fakeBot._client.emit('declare_commands', {
+      rootIndex: 0,
+      nodes: [
+        { flags: { command_node_type: 0 }, children: [1, 2, 3] },
+        { flags: { command_node_type: 1 }, extraNodeData: { name: 'home' }, children: [] },
+        { flags: { command_node_type: 1 }, extraNodeData: { name: 'help' }, children: [] },
+        { flags: { command_node_type: 1 }, extraNodeData: { name: 'sethome' }, children: [] }
+      ]
+    });
+
+    const completions = await manager.completeChat(profile.id, '/h');
+
+    expect(completions).toEqual(['/help', '/home']);
+    // The graph is authoritative, so we must not pester the server with tab_complete.
+    expect(fakeBot.tabComplete).not.toHaveBeenCalled();
+  });
+
+  it('completes player-name arguments from the online roster', async () => {
+    const fakeBot = new FakeBot();
+    fakeBot.username = 'self';
+    fakeBot.players = { Alice: {}, Andrew: {}, Bob: {}, self: {} };
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+    fakeBot._client.emit('declare_commands', {
+      rootIndex: 0,
+      nodes: [
+        { flags: { command_node_type: 0 }, children: [1] },
+        { flags: { command_node_type: 1 }, extraNodeData: { name: 'msg' }, children: [] }
+      ]
+    });
+
+    const completions = await manager.completeChat(profile.id, '/msg A');
+
+    // Prefix-matched, the bot's own name excluded.
+    expect(completions).toEqual(['Alice', 'Andrew']);
+  });
+
+  it('falls back to local commands silently when the server never answers tab_complete', async () => {
+    const fakeBot = new FakeBot();
+    // A graph-less (pre-1.13 / proxy) server that simply never replies.
+    fakeBot.tabComplete = vi.fn(async () => {
+      throw new Error('tab_complete timed out, is the server responding?');
+    });
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+
+    const completions = await manager.completeChat(profile.id, '/s');
+
+    expect(fakeBot.tabComplete).toHaveBeenCalled();
+    expect(completions).toEqual(['/spawn']);
+    // The old behaviour spammed the event log on every keystroke — it must not anymore.
+    const events = manager.getState().sessions[profile.id].events;
+    expect(events.some((event) => event.label === 'Tab completion unavailable')).toBe(false);
+  });
+
   it('auto-responds to matching server chat with per-rule cooldowns', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-06-25T10:00:00Z'));
@@ -830,12 +948,22 @@ describe('BotManager', () => {
         area: {
           enabled: false,
           mode: 'mine',
+          coords: 'relative',
           from: { x: 0, y: 0, z: 0 },
           to: { x: 1, y: 1, z: 1 },
           fillBlock: 'stone',
+          hollow: false,
+          walk: false,
           actionDelayMs: 100
         },
-        generator: { enabled: false, mode: 'forward', direction: 'north', depth: 2, actionDelayMs: 100 },
+        generator: {
+          enabled: false,
+          slots: [{ id: 'gen-n', x: 0, y: 0, z: -1 }],
+          blockFilter: 'cobblestone',
+          walk: false,
+          actionDelayMs: 100,
+          regenDelayMs: 1000
+        },
         script: { enabled: false, loop: true, steps: [], quickCommands: [] },
         discord: {
           enabled: false,
@@ -887,6 +1015,121 @@ describe('BotManager', () => {
     fakeBot.emit('chat', testUsername, 'tpa self message');
     fakeBot.emit('chat', 'Friend', 'tpa after cooldown');
     expect(fakeBot.chat).toHaveBeenCalledTimes(2);
+  });
+
+  it('runs the generator as a regenerating farm loop and respects the block filter', async () => {
+    vi.useFakeTimers();
+    const fakeBot = new FakeBot();
+    // Ground is cobblestone, so the slot below the bot is a matching block.
+    const world = attachWorld(fakeBot, 'cobblestone', 70);
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+
+    // origin = floor({12.4, 65, -9.8}) = {12, 65, -10}; slot {0,-1,0} -> {12, 64, -10}.
+    const slotKey = world.key(12, 64, -10);
+    await manager.startOperation(profile.id, {
+      kind: 'generator',
+      config: {
+        slots: [{ id: 's1', x: 0, y: -1, z: 0 }],
+        blockFilter: 'cobblestone',
+        walk: false,
+        actionDelayMs: 50,
+        regenDelayMs: 50
+      }
+    });
+
+    expect(manager.getState().sessions[profile.id].operations.generator.state).toBe('running');
+
+    await vi.advanceTimersByTimeAsync(60);
+    let generator = manager.getState().sessions[profile.id].operations.generator;
+    expect(generator.stats.mined).toBeGreaterThanOrEqual(1);
+    expect(world.placed.get(slotKey)).toBe('air');
+    const minedAfterFirst = generator.stats.mined;
+
+    // Block is gone now: the loop keeps running and just skips, never blocks.
+    await vi.advanceTimersByTimeAsync(220);
+    generator = manager.getState().sessions[profile.id].operations.generator;
+    expect(generator.state).toBe('running');
+    expect(generator.stats.skipped).toBeGreaterThanOrEqual(1);
+
+    // Simulate regeneration: the cobblestone re-forms and the loop mines it again.
+    world.placed.set(slotKey, 'cobblestone');
+    await vi.advanceTimersByTimeAsync(220);
+    generator = manager.getState().sessions[profile.id].operations.generator;
+    expect(generator.stats.mined).toBeGreaterThan(minedAfterFirst);
+
+    await manager.stopOperation(profile.id, 'generator');
+    expect(manager.getState().sessions[profile.id].operations.generator.state).toBe('idle');
+  });
+
+  it('mines a 3D area top layer-first and completes once the box is cleared', async () => {
+    vi.useFakeTimers();
+    const fakeBot = new FakeBot();
+    const world = attachWorld(fakeBot, 'stone', 80);
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+
+    // A vertical 1x3x1 column from the bot upward: {12, 65..67, -10}, all solid stone.
+    await manager.startOperation(profile.id, {
+      kind: 'area',
+      config: {
+        mode: 'mine',
+        coords: 'relative',
+        from: { x: 0, y: 0, z: 0 },
+        to: { x: 0, y: 2, z: 0 },
+        hollow: false,
+        walk: false,
+        actionDelayMs: 20
+      }
+    });
+
+    await vi.advanceTimersByTimeAsync(1000);
+    const area = manager.getState().sessions[profile.id].operations.area;
+    expect(area.state).toBe('complete');
+    expect(area.completed).toBe(3);
+
+    const digCalls = fakeBot.dig.mock.calls as unknown as Array<[{ position: { y: number } }]>;
+    const digYs = digCalls.map((call) => call[0].position.y);
+    expect(digYs).toEqual([67, 66, 65]); // top-down
+    expect(world.placed.get(world.key(12, 65, -10))).toBe('air');
+  });
+});
+
+describe('areaPositions', () => {
+  it('walks every block of a solid box, mining top layers first', () => {
+    const positions = areaPositions({ x: 0, y: 0, z: 0 }, { x: 1, y: 2, z: 1 }, 'mine', false);
+    expect(positions).toHaveLength(2 * 3 * 2);
+    expect(positions[0].y).toBe(2);
+    expect(positions[positions.length - 1].y).toBe(0);
+  });
+
+  it('fills bottom layers first so placed blocks always have support', () => {
+    const positions = areaPositions({ x: 0, y: 0, z: 0 }, { x: 0, y: 2, z: 0 }, 'fill', false);
+    expect(positions.map((position) => position.y)).toEqual([0, 1, 2]);
+  });
+
+  it('keeps only the outer shell when hollow', () => {
+    const solid = areaPositions({ x: 0, y: 0, z: 0 }, { x: 2, y: 2, z: 2 }, 'fill', false);
+    const hollow = areaPositions({ x: 0, y: 0, z: 0 }, { x: 2, y: 2, z: 2 }, 'fill', true);
+    expect(solid).toHaveLength(27);
+    expect(hollow).toHaveLength(26);
+    expect(hollow.some((position) => position.x === 1 && position.y === 1 && position.z === 1)).toBe(false);
   });
 });
 
@@ -1007,5 +1250,171 @@ describe('cropBuildPlan', () => {
       const farmland = { x: seed.position.x, y: seed.position.y - 1, z: seed.position.z };
       expect(tills.some((item) => posKey(item.position) === posKey(farmland))).toBe(true);
     }
+  });
+});
+
+describe('minecraft text flattening (no raw text leaks)', () => {
+  it('strips §-color codes from plain strings and components', () => {
+    expect(stringifyMinecraftText('§aHello §c§lWorld§r')).toBe('Hello World');
+    expect(stringifyMinecraftText({ text: '§6Gold §rtext' })).toBe('Gold text');
+  });
+
+  it('strips legacy hex (§x§r§r…) color sequences', () => {
+    expect(stringifyMinecraftText('§x§F§F§5§5§5§5Red-ish')).toBe('Red-ish');
+  });
+
+  it('flattens nested text + extra components', () => {
+    const component = { text: 'Hi ', extra: [{ text: 'there' }, { text: '!' }] };
+    expect(stringifyMinecraftText(component)).toBe('Hi there!');
+  });
+
+  it('substitutes translate "with" args into the template instead of dropping them', () => {
+    const component = { translate: 'chat.type.text', with: ['Steve', 'hello world'] };
+    expect(stringifyMinecraftText(component)).toBe('<Steve> hello world');
+  });
+
+  it('resolves known disconnect translate keys to friendly text', () => {
+    expect(stringifyReason({ translate: 'multiplayer.disconnect.server_full' })).toBe('Server is full');
+    expect(stringifyReason({ translate: 'multiplayer.disconnect.banned.reason', with: ['griefing'] })).toBe(
+      'Banned: griefing'
+    );
+  });
+
+  it('humanizes an unknown translate key instead of showing the raw dotted id', () => {
+    expect(stringifyReason({ translate: 'some.custom.kick_reason' })).toBe('Kick reason');
+  });
+
+  it('renders score / selector / keybind components instead of empty string', () => {
+    expect(stringifyMinecraftText({ score: { name: '@p', objective: 'kills', value: '42' } })).toBe('42');
+    expect(stringifyMinecraftText({ keybind: 'key.jump' })).toBe('Jump');
+  });
+
+  it('parses a JSON-string kick reason', () => {
+    expect(stringifyReason('{"text":"§cBye"}')).toBe('Bye');
+  });
+
+  it('never surfaces raw JSON for a content-less component', () => {
+    const reason = stringifyReason({ unknownField: 123, score: {} });
+    expect(reason).not.toContain('{');
+    expect(reason).not.toContain('unknownField');
+    expect(reason).toBe('Disconnected');
+  });
+
+  it('never returns "[object Object]" or empty for an empty object', () => {
+    expect(stringifyReason({})).toBe('Disconnected');
+  });
+});
+
+describe('BotManager inventory actions', () => {
+  const invProfile: AccountProfile = { ...profile, id: 'inv-test', routine: { ...profile.routine, autoEat: false } };
+
+  async function setupOnline(configure?: (bot: FakeBot) => void) {
+    const fakeBot = new FakeBot();
+    configure?.(fakeBot);
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([invProfile])
+    });
+    await manager.load();
+    await manager.connect(invProfile.id);
+    fakeBot.emit('spawn');
+    return { manager, fakeBot, profileId: invProfile.id };
+  }
+
+  it('drops a single item via toss with the live item type and metadata', async () => {
+    const { manager, fakeBot, profileId } = await setupOnline((bot) => {
+      bot.inventory.slots[9] = { slot: 9, type: 276, metadata: 0, name: 'diamond_sword', displayName: 'Diamond Sword', count: 1 };
+    });
+    await manager.inventoryAction(profileId, { action: 'dropOne', slot: 9 });
+    expect(fakeBot.toss).toHaveBeenCalledWith(276, 0, 1);
+  });
+
+  it('drops a whole stack via tossStack with the live item', async () => {
+    const item = { slot: 9, type: 3, name: 'dirt', displayName: 'Dirt', count: 64 };
+    const { manager, fakeBot, profileId } = await setupOnline((bot) => {
+      bot.inventory.slots[9] = item;
+    });
+    await manager.inventoryAction(profileId, { action: 'dropStack', slot: 9 });
+    expect(fakeBot.tossStack).toHaveBeenCalledWith(item);
+  });
+
+  it('moves an item between slots', async () => {
+    const { manager, fakeBot, profileId } = await setupOnline((bot) => {
+      bot.inventory.slots[9] = { slot: 9, type: 3, name: 'dirt', displayName: 'Dirt', count: 10 };
+    });
+    await manager.inventoryAction(profileId, { action: 'move', from: 9, to: 36 });
+    expect(fakeBot.moveSlotItem).toHaveBeenCalledWith(9, 36);
+  });
+
+  it('equips an item to the requested destination', async () => {
+    const helmet = { slot: 9, type: 400, name: 'diamond_helmet', displayName: 'Diamond Helmet', count: 1 };
+    const { manager, fakeBot, profileId } = await setupOnline((bot) => {
+      bot.inventory.slots[9] = helmet;
+    });
+    await manager.inventoryAction(profileId, { action: 'equip', slot: 9, destination: 'head' });
+    expect(fakeBot.equip).toHaveBeenCalledWith(helmet, 'head');
+  });
+
+  it('unequips an armor destination', async () => {
+    const { manager, fakeBot, profileId } = await setupOnline();
+    await manager.inventoryAction(profileId, { action: 'unequip', destination: 'feet' });
+    expect(fakeBot.unequip).toHaveBeenCalledWith('feet');
+  });
+
+  it('selects a hotbar slot', async () => {
+    const { manager, fakeBot, profileId } = await setupOnline();
+    await manager.inventoryAction(profileId, { action: 'selectHotbar', hotbar: 4 });
+    expect(fakeBot.setQuickBarSlot).toHaveBeenCalledWith(4);
+  });
+
+  it('shift-transfers a container slot with clickWindow mode 1', async () => {
+    const slots = new Array(63).fill(null);
+    slots[5] = { slot: 5, type: 3, name: 'dirt', displayName: 'Dirt', count: 1 };
+    const { manager, fakeBot, profileId } = await setupOnline((bot) => {
+      bot.currentWindow = { title: 'Chest', slots, inventoryStart: 27, hotbarStart: 54, craftingResultSlot: -1 };
+    });
+    await manager.inventoryAction(profileId, { action: 'transfer', slot: 5 });
+    expect(fakeBot.clickWindow).toHaveBeenCalledWith(5, 0, 1);
+  });
+
+  it('skips actions and records a warning when the bot is offline', async () => {
+    const fakeBot = new FakeBot();
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([invProfile])
+    });
+    await manager.load();
+    const state = await manager.inventoryAction(invProfile.id, { action: 'dropStack', slot: 9 });
+    expect(fakeBot.tossStack).not.toHaveBeenCalled();
+    expect(state.sessions[invProfile.id].events[0]).toEqual(expect.objectContaining({ type: 'inventory', tone: 'warn' }));
+  });
+
+  it('captures a slot-positioned snapshot with hotbar, equip and edible hints', async () => {
+    const { manager, fakeBot, profileId } = await setupOnline((bot) => {
+      bot.quickBarSlot = 2;
+      bot.inventory.slots[5] = { slot: 5, type: 400, name: 'diamond_helmet', displayName: 'Diamond Helmet', count: 1 };
+      bot.inventory.slots[9] = { slot: 9, type: 297, name: 'bread', displayName: 'Bread', count: 5 };
+    });
+    fakeBot.emit('inventoryUpdate');
+    const inv = manager.getState().sessions[profileId].inventory;
+    expect(inv.selectedHotbar).toBe(2);
+    expect(inv.window.kind).toBe('inventory');
+    expect(inv.armor.find((entry) => entry.slot === 5)?.equipDestination).toBe('head');
+    expect(inv.slots.find((entry) => entry.slot === 9)?.edible).toBe(true);
+  });
+
+  it('reports an open container window in the snapshot', async () => {
+    const { manager, fakeBot, profileId } = await setupOnline((bot) => {
+      bot.currentWindow = { title: 'Chest', slots: new Array(63).fill(null), inventoryStart: 27, hotbarStart: 54, craftingResultSlot: -1 };
+    });
+    fakeBot.emit('inventoryUpdate');
+    const inv = manager.getState().sessions[profileId].inventory;
+    expect(inv.window.kind).toBe('container');
+    expect(inv.window.inventoryStart).toBe(27);
+    expect(inv.openWindowTitle).toBe('Chest');
   });
 });

@@ -109,21 +109,43 @@ export interface CropFarmConfig {
   waterMode: CropWaterMode;
 }
 
+export type AreaCoordSpace = 'relative' | 'absolute';
+
 export interface AreaOperationConfig {
   enabled: boolean;
   mode: 'mine' | 'fill';
+  /** 'relative' treats from/to as offsets from the bot; 'absolute' uses raw world coordinates. */
+  coords: AreaCoordSpace;
   from: PositionSnapshot;
   to: PositionSnapshot;
   fillBlock: string;
+  /** Only act on the outer faces of the box (hollow shell) instead of every block inside. */
+  hollow: boolean;
+  /** Walk/pathfind to each block so the region can exceed the bot's stationary reach. */
+  walk: boolean;
   actionDelayMs: number;
+}
+
+/** A single regenerating block the generator farm harvests, as an offset from the bot. */
+export interface GeneratorSlot {
+  id: string;
+  x: number;
+  y: number;
+  z: number;
 }
 
 export interface GeneratorMineConfig {
   enabled: boolean;
-  mode: 'forward' | 'four_way';
-  direction: 'north' | 'south' | 'east' | 'west';
-  depth: number;
+  /** Blocks (relative to the bot) to mine on a loop as they regenerate. */
+  slots: GeneratorSlot[];
+  /** Only mine a slot when its block name matches this; empty = mine whatever solid block is there. */
+  blockFilter: string;
+  /** Walk within reach of each slot before mining (off = stand still, the usual AFK generator setup). */
+  walk: boolean;
+  /** Delay between individual mine actions. */
   actionDelayMs: number;
+  /** Extra pause after each full pass over every slot, to let the blocks regenerate. */
+  regenDelayMs: number;
 }
 
 export interface ScriptStep {
@@ -215,22 +237,55 @@ export interface ChatLine {
   message: string;
 }
 
+export type EquipDestination = 'hand' | 'head' | 'torso' | 'legs' | 'feet' | 'off-hand';
+
 export interface InventoryItemSnapshot {
   slot: number;
   name: string;
   displayName: string;
   count: number;
+  /** Natural equip target for this item (armor slot or 'hand' for tools/blocks); null if it can't be equipped. */
+  equipDestination?: EquipDestination | null;
+  /** True when the item can be eaten or drunk (drives the "eat" action in the slot menu). */
+  edible?: boolean;
+}
+
+/** Layout of the window currently backing the interactive grid (player inventory or an open container). */
+export interface InventoryWindowLayout {
+  kind: 'inventory' | 'container';
+  title: string | null;
+  totalSlots: number;
+  /** First window slot that belongs to the player inventory (9 for the bare inventory). */
+  inventoryStart: number;
+  /** First window slot of the player hotbar row. */
+  hotbarStart: number;
+  /** Crafting-result slot for this window, or -1 when it has none. */
+  craftingResultSlot: number;
 }
 
 export interface LiveInventorySnapshot {
   updatedAt: string | null;
   heldItem: InventoryItemSnapshot | null;
+  /** Active hotbar index (0-8), or null when offline. */
+  selectedHotbar: number | null;
   armor: InventoryItemSnapshot[];
   crafting: InventoryItemSnapshot[];
   storage: InventoryItemSnapshot[];
   slots: InventoryItemSnapshot[];
+  window: InventoryWindowLayout;
   openWindowTitle: string | null;
 }
+
+export type InventoryActionRequest =
+  | { action: 'dropOne'; slot: number }
+  | { action: 'dropStack'; slot: number }
+  | { action: 'move'; from: number; to: number }
+  | { action: 'transfer'; slot: number }
+  | { action: 'equip'; slot: number; destination: EquipDestination }
+  | { action: 'unequip'; destination: EquipDestination }
+  | { action: 'selectHotbar'; hotbar: number }
+  | { action: 'useHeld' }
+  | { action: 'consume'; slot: number };
 
 export type OperationKind = 'cactusFarm' | 'cropFarm' | 'area' | 'generator' | 'script' | 'discord';
 
@@ -295,6 +350,8 @@ export interface AppSettings {
   showChatTimestamps: boolean;
   /** Use a denser, tighter layout. */
   compactDensity: boolean;
+  /** On Windows/Linux, closing the window hides to the system tray instead of quitting. */
+  minimizeToTrayOnClose: boolean;
   /** Reconnect policy pre-filled into newly created accounts. */
   defaultReconnect: ReconnectPolicy;
 }
@@ -305,6 +362,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   confirmStopAll: true,
   showChatTimestamps: true,
   compactDensity: false,
+  minimizeToTrayOnClose: true,
   defaultReconnect: {
     enabled: true,
     maxAttempts: 8,
@@ -337,6 +395,40 @@ export interface DiscordRuntimeInput {
   channelId?: string;
 }
 
+export type UpdatePhase = 'idle' | 'available' | 'downloading' | 'downloaded' | 'error';
+
+/**
+ * 'auto' = the download installs in place and relaunches (Windows).
+ * 'manual' = the installer is downloaded and opened; the user finishes by hand
+ * (macOS — ad-hoc signing forbids silent in-place updates).
+ */
+export type UpdateInstallMode = 'auto' | 'manual';
+
+export interface UpdateCheckResult {
+  updateAvailable: boolean;
+  currentVersion: string;
+  latestVersion: string;
+  /** Release notes (GitHub release body markdown). */
+  notes: string;
+  /** GitHub release page, used as the "Release notes" link and as a download fallback. */
+  htmlUrl: string;
+  /** Direct installer asset for this platform/arch, or null when only the release page applies. */
+  assetUrl: string | null;
+  installMode: UpdateInstallMode;
+}
+
+export interface UpdateProgress {
+  percent: number;
+  transferred: number;
+  total: number;
+  bytesPerSecond: number;
+}
+
+export interface UpdateDownloadedInfo {
+  version: string;
+  installMode: UpdateInstallMode;
+}
+
 export interface LauncherApi {
   platform: string;
   getState: () => Promise<LauncherState>;
@@ -351,6 +443,7 @@ export interface LauncherApi {
   startOperation: (profileId: string, request: OperationStartRequest) => Promise<LauncherState>;
   stopOperation: (profileId: string, kind: OperationKind) => Promise<LauncherState>;
   runQuickScript: (profileId: string, command: string) => Promise<LauncherState>;
+  inventoryAction: (profileId: string, request: InventoryActionRequest) => Promise<LauncherState>;
   completeChat: (profileId: string, partial: string) => Promise<string[]>;
   configureDiscord: (profileId: string, input: DiscordRuntimeInput) => Promise<LauncherState>;
   updateSettings: (patch: Partial<AppSettings>) => Promise<LauncherState>;
@@ -361,4 +454,10 @@ export interface LauncherApi {
   isWindowMaximized: () => Promise<boolean>;
   onWindowMaximizedChange: (listener: (isMaximized: boolean) => void) => () => void;
   onState: (listener: (state: LauncherState) => void) => () => void;
+  checkForUpdates: () => Promise<UpdateCheckResult>;
+  downloadUpdate: () => Promise<void>;
+  onUpdateAvailable: (listener: (info: UpdateCheckResult) => void) => () => void;
+  onUpdateProgress: (listener: (progress: UpdateProgress) => void) => () => void;
+  onUpdateDownloaded: (listener: (info: UpdateDownloadedInfo) => void) => () => void;
+  onUpdateError: (listener: (message: string) => void) => () => void;
 }

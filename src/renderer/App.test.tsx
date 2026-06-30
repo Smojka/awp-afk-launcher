@@ -149,6 +149,7 @@ function createTestApi(): LauncherApi {
       }
       return publish();
     },
+    inventoryAction: async () => publish(),
     completeChat: async (profileId, partial) => {
       const session = state.sessions[profileId];
       const completions = ['/spawn', '/home', `${partial}test`].filter(Boolean);
@@ -180,7 +181,21 @@ function createTestApi(): LauncherApi {
     onState: (listener: (state: LauncherState) => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
-    }
+    },
+    checkForUpdates: async () => ({
+      updateAvailable: false,
+      currentVersion: '0.0.0',
+      latestVersion: '0.0.0',
+      notes: '',
+      htmlUrl: '',
+      assetUrl: null,
+      installMode: 'auto' as const
+    }),
+    downloadUpdate: async () => undefined,
+    onUpdateAvailable: () => () => undefined,
+    onUpdateProgress: () => () => undefined,
+    onUpdateDownloaded: () => () => undefined,
+    onUpdateError: () => () => undefined
   };
 }
 
@@ -206,8 +221,9 @@ describe('ChunkKeeper UI', () => {
     expect(screen.getByText('Auto-eat')).toBeInTheDocument();
     expect(screen.getByText('Eat below')).toBeInTheDocument();
     expect(screen.getByText('Pause below')).toBeInTheDocument();
-    expect(screen.getByText('Auto response')).toBeInTheDocument();
-    expect(screen.getByText('Match replies')).toBeInTheDocument();
+    expect(screen.getByText('Auto-response')).toBeInTheDocument();
+    expect(screen.getByText('Match (contains)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Command input')).toBeInTheDocument();
     expect(screen.getByText('Pulse rail')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^connect$/i })).toBeInTheDocument();
     expect(screen.getByLabelText('Window controls')).toBeInTheDocument();
@@ -235,6 +251,24 @@ describe('ChunkKeeper UI', () => {
     expect(within(onlineRow).queryByText('offline · play.arkonas.net')).not.toBeInTheDocument();
   });
 
+  it('shows tab-completion suggestions and clears them once the input changes', async () => {
+    const user = userEvent.setup();
+    render(<App api={createTestApi()} />);
+    await screen.findByRole('heading', { name: 'ChunkKeeper' });
+
+    const input = screen.getByLabelText('Command input');
+    await user.click(input);
+    await user.keyboard('/h');
+    await user.keyboard('{Tab}');
+
+    const suggestions = await screen.findByLabelText('Tab completion suggestions');
+    expect(within(suggestions).getByText('/home')).toBeInTheDocument();
+
+    // Typing past the suggestions must drop them rather than leaving stale chips up.
+    await user.keyboard('o');
+    expect(screen.queryByLabelText('Tab completion suggestions')).not.toBeInTheDocument();
+  });
+
   it('does not silently fall back to simulated data when the desktop bridge and local web API are missing', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED')));
 
@@ -253,7 +287,8 @@ describe('ChunkKeeper UI', () => {
     expect(buttonsWithoutAdjacentHelp(container)).toEqual([]);
     const sliders = Array.from(container.querySelectorAll('.slider'));
     // Cactus "Layers" slider is hidden while the auto-farm build toggle is on (default).
-    expect(sliders.length).toBeGreaterThanOrEqual(7);
+    // The generator panel uses a structured slot editor + numeric fields rather than sliders.
+    expect(sliders.length).toBeGreaterThanOrEqual(6);
     expect(sliders.every((slider) => slider.querySelector('.help-tip'))).toBe(true);
     const connectHelp = screen.getByLabelText(/Seçili hesabı bağlar/i);
     expect(connectHelp).toBeInTheDocument();
@@ -351,7 +386,7 @@ describe('ChunkKeeper UI', () => {
     expect(screen.getByRole('tab', { name: /operations/i })).toHaveAttribute('aria-selected', 'true');
     expect(overviewTab).toHaveAttribute('aria-selected', 'false');
     expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'tabpanel-operations');
-    expect(screen.getByText('Auto response')).toBeVisible();
+    expect(screen.getByText('Auto-response')).toBeVisible();
 
     await user.click(screen.getByRole('tab', { name: /inventory/i }));
     expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'tabpanel-inventory');
@@ -363,5 +398,72 @@ describe('ChunkKeeper UI', () => {
     await user.click(screen.getByRole('tab', { name: /activity/i }));
     expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'tabpanel-activity');
     expect(screen.getByText('Pulse rail')).toBeVisible();
+  });
+
+  it('adds an editable blank quick-command row when the add button is clicked', async () => {
+    // Regression: the editor used to normalize+strip blank rows on every render,
+    // so the row the "Add quick command" button created vanished immediately and
+    // the button looked dead. Blank rows must survive until save.
+    const user = userEvent.setup();
+    render(<App api={createTestApi()} />);
+
+    await screen.findByRole('heading', { name: 'ChunkKeeper' });
+    await user.click(screen.getByRole('tab', { name: /operations/i }));
+
+    const before = screen.queryAllByPlaceholderText('/home').length;
+    await user.click(screen.getByRole('button', { name: /add quick command/i }));
+
+    const rows = screen.getAllByPlaceholderText('/home');
+    expect(rows.length).toBe(before + 1);
+
+    // The new row is real and accepts input.
+    const fresh = rows[rows.length - 1];
+    await user.type(fresh, '/spawn');
+    expect(fresh).toHaveValue('/spawn');
+  });
+
+  it('opens a searchable quick-command menu from the command bar and sends the picked command', async () => {
+    const user = userEvent.setup();
+    const api = createTestApi();
+    const runQuickScript = vi.spyOn(api, 'runQuickScript');
+    render(<App api={api} />);
+
+    await screen.findByRole('heading', { name: 'ChunkKeeper' });
+
+    // The selected demo profile (ARKONAS_SMP) is online, so quick commands run.
+    const commandBar = screen.getByRole('region', { name: /command bar/i });
+    await user.click(within(commandBar).getByRole('button', { name: /quick/i }));
+
+    // The menu lists the default quick commands (Spawn + Home).
+    const search = await screen.findByRole('textbox', { name: /quick command search/i });
+    expect(screen.getByRole('menuitem', { name: /spawn/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /home/i })).toBeInTheDocument();
+
+    // Typing filters the list down.
+    await user.type(search, 'home');
+    expect(screen.queryByRole('menuitem', { name: /spawn/i })).not.toBeInTheDocument();
+
+    // Picking an item dispatches the command and closes the menu.
+    await user.click(screen.getByRole('menuitem', { name: /home/i }));
+    expect(runQuickScript).toHaveBeenCalledWith('session-01', '/home');
+    expect(screen.queryByRole('menuitem', { name: /home/i })).not.toBeInTheDocument();
+  });
+
+  it('opens a slot action menu and dispatches the picked inventory action', async () => {
+    const user = userEvent.setup();
+    const api = createTestApi();
+    const inventoryAction = vi.spyOn(api, 'inventoryAction');
+    render(<App api={api} />);
+
+    await screen.findByRole('heading', { name: 'ChunkKeeper' });
+    await user.click(screen.getByRole('tab', { name: /inventory/i }));
+
+    // The online demo session holds Sand x48 in hotbar slot 37.
+    const sandSlot = screen.getByTitle('Sand ×48');
+    await user.click(sandSlot);
+
+    // The popover offers contextual actions; pick "Yığını at" (drop stack).
+    await user.click(await screen.findByRole('menuitem', { name: /yığını at/i }));
+    expect(inventoryAction).toHaveBeenCalledWith('session-01', { action: 'dropStack', slot: 37 });
   });
 });

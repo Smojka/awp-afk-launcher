@@ -59,6 +59,30 @@ describe('local web dashboard server', () => {
 
     expect(response.status).toBe(403);
   });
+
+  it('serves the shell with a CSP that allows the renderer inline styles and data assets', async () => {
+    const staticDir = await createStaticDir();
+    const server = await startTestServer({ staticDir });
+
+    const response = await fetch(server.url);
+    const csp = response.headers.get('content-security-policy') ?? '';
+
+    expect(csp).toContain("style-src 'self' 'unsafe-inline'");
+    expect(csp).toContain('img-src');
+    expect(csp).toContain("frame-ancestors 'none'");
+  });
+
+  it('falls back to the SPA shell for a client route but 404s a missing asset', async () => {
+    const staticDir = await createStaticDir();
+    const server = await startTestServer({ staticDir });
+
+    const route = await fetch(`${server.url}/accounts/session-01`);
+    expect(route.status).toBe(200);
+    await expect(route.text()).resolves.toContain('ChunkKeeper dashboard shell');
+
+    const asset = await fetch(`${server.url}/assets/missing.js`);
+    expect(asset.status).toBe(404);
+  });
 });
 
 async function startTestServer({
