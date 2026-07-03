@@ -458,10 +458,14 @@ The **Operations** tab runs active automation against the selected online bot. E
 ### Cactus farm
 Builds a self‑contained **twin‑row basin farm** (or plants bare sand+cactus columns) from a computed placement plan, checking inventory has every required material first. Each row pair shares one fence lattice between two cactus rows, a water sheet washes drops into a hopper line, and a containment ring keeps everything sealed — verified end‑to‑end against a live server (drops reliably reach the output chest).
 
+The build engine is designed to finish in **one Start**: failed cells are re‑queued and retried in fresh passes (dependency order preserved), a pre‑flood barrier repairs every hole while the basin interior is still reachable, blocks above eye height are jump‑placed exactly like a vanilla player, a movement watchdog detects and escapes pathfinder livelocks, and a frozen bot self‑heals up to a full reconnect+resume that picks the build up where it stopped. Only a genuinely unbuildable site (two full passes with zero progress) blocks the run — with an honest message instead of a silent hole.
+
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `rowPairs` | Number of twin cactus rows, 1–8 (6 plants each) | `1` |
-| `wallBlock` | Basin floor/ring/strip block — `glass`, `cobblestone`, or `smooth_stone` | `glass` |
+| `columns` | Side‑by‑side basin copies tiled east, 1–4 — each with its own chest + hopper line | `1` |
+| `basinLayers` | **Experimental.** Stacked levels dug **downward**, 1–3: each extra level excavates a 5‑high room below the previous one (straight access stair included) and builds a full basin inside it. Needs solid ground under the surface. Big excavations take a while; if the bot drops mid‑dig it reconnects and resumes at the original origin, and a second Start repairs any leftover cells. Upward stacking is deliberately unsupported — Paper's placement validation rejects the mid‑air bridging it would need. | `1` |
+| `wallBlock` | Basin floor/ring/strip block — `glass`, `cobblestone`, or `smooth_stone` (the cell above the chest is always glass so the lid opens) | `glass` |
 | `placementDelayMs` | Delay between placements (100–10000) | `550` |
 | `build` | Full auto‑harvest basin vs bare columns | `true` |
 | `breakBlock` | Thin block that snaps cactus off — `oak_fence` or `glass_pane` | `oak_fence` |

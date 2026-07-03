@@ -9,6 +9,10 @@ export interface RoutineBot {
 
 export interface RoutineCallbacks {
   emitEvent: (event: Omit<SessionEvent, 'id' | 'at' | 'profileId'>) => void;
+  /** Return true to skip this tick's action. Used to hold the anti-AFK jiggle while a
+   *  build/farm operation is driving the bot — a random look or jump pulse landing in
+   *  the middle of a pathfinder walk corrupts it (walks time out, placements mis-aim). */
+  shouldHold?: () => boolean;
 }
 
 export function calculateRoutineDelay(
@@ -72,6 +76,7 @@ export class AfkRoutine {
   }
 
   private tick(): void {
+    if (this.callbacks.shouldHold?.()) return;
     const actions = chooseRoutineActions(this.config);
     if (actions.length === 0) return;
     const action = actions[Math.floor(this.random() * actions.length)] ?? actions[0];

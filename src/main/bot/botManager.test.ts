@@ -757,12 +757,13 @@ describe('BotManager', () => {
       expect(fakeBot.equip).toHaveBeenCalledWith(expect.objectContaining({ name }), 'hand');
     }
     expect(operation.state).toBe('complete');
-    // one row pair: chest 1 + hoppers 5 + floor 35 + ring base 29 + W/S/N walls 92
-    // + row strips 14 + fences 7 + cacti 6 + water 3 + east wall 28 = 220
-    expect(operation.total).toBe(220);
-    expect(operation.completed).toBe(220);
+    // one row pair: chest 1 + hoppers 5 + floor 35 + ring base 29 + W/S/N wall courses
+    // y1-y2 46 + inside-placed y3 course 23 + row strips 14 + fences 7 + cacti 6
+    // + pre-flood barrier 1 + water 3 + east wall (2 courses) 14 = 184
+    expect(operation.total).toBe(184);
+    expect(operation.completed).toBe(184);
     // water is poured with the bucket, everything else with placeBlock
-    expect(fakeBot.placeBlock).toHaveBeenCalledTimes(217);
+    expect(fakeBot.placeBlock).toHaveBeenCalledTimes(180);
     expect(fakeBot.activateItem).toHaveBeenCalledTimes(3);
     // the hopper chain is clicked onto the downstream block's +Z face with sneak held
     const placeCalls = fakeBot.placeBlock.mock.calls as unknown as Array<[unknown, { x: number; y: number; z: number }]>;
@@ -793,7 +794,7 @@ describe('BotManager', () => {
       kind: 'cropFarm',
       config: { crop: 'wheat', radius: 1, harvestDelayMs: 20, build: true, autoTill: true, waterMode: 'auto' }
     });
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(12000);
 
     // radius 1 → 3×3 square, centre is water → 8 farmland cells
     expect(fakeBot.activateBlock).toHaveBeenCalledTimes(8); // till each cell
@@ -845,7 +846,7 @@ describe('BotManager', () => {
     expect(operation.stats.harvested).toBe(2);
   });
 
-  it('tolerates a failed auto-water placement and still builds the field (soft-skip, no abort)', async () => {
+  it('retries a failed auto-water placement across passes, then blocks honestly', async () => {
     vi.useFakeTimers();
     const fakeBot = new FakeBot();
     fakeBot.inventory.items = () => [
@@ -870,12 +871,15 @@ describe('BotManager', () => {
       kind: 'cropFarm',
       config: { crop: 'wheat', radius: 1, harvestDelayMs: 20, build: true, autoTill: true, waterMode: 'auto' }
     });
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(12000);
 
     const operation = manager.getState().sessions[profile.id].operations.cropFarm;
-    // A single failed water cell no longer aborts the whole build; it proceeds to the harvest loop.
-    expect(operation.state).not.toBe('blocked');
-    expect(operation.state).toBe('running');
+    // A permanently-failing water cell is retried in fresh passes, then blocks the build
+    // honestly (a dry field silently yields nothing) instead of pretending it completed.
+    expect(operation.state).toBe('blocked');
+    expect(operation.detail).toContain('still failing');
+    expect(operation.stats.failed).toBe(3); // pass 1 + two zero-progress retry passes
+    expect(operation.completed).toBe(operation.total); // abandoned cell still closes the bar
   });
 
   it('runs quick scripts and exposes tab-completion suggestions from the bot', async () => {
@@ -990,7 +994,7 @@ describe('BotManager', () => {
     const autoResponseProfile: AccountProfile = {
       ...profile,
       modules: {
-        cactusFarm: { enabled: false, layers: 1, radius: 1, placementDelayMs: 100, build: true, breakBlock: 'oak_fence', buildCollection: true, rowPairs: 1, wallBlock: 'glass' },
+        cactusFarm: { enabled: false, layers: 1, radius: 1, placementDelayMs: 100, build: true, breakBlock: 'oak_fence', buildCollection: true, rowPairs: 1, wallBlock: 'glass', columns: 1, basinLayers: 1 },
         cropFarm: { enabled: false, crop: 'wheat', radius: 2, harvestDelayMs: 100, replant: true, collectDrops: true, build: true, autoTill: true, waterMode: 'auto' },
         area: {
           enabled: false,
@@ -1189,7 +1193,9 @@ const cactusConfig: CactusFarmConfig = {
   breakBlock: 'oak_fence',
   buildCollection: true,
   rowPairs: 1,
-  wallBlock: 'glass'
+  wallBlock: 'glass',
+  columns: 1,
+  basinLayers: 1
 };
 
 const cropConfig: CropFarmConfig = {
@@ -1307,7 +1313,7 @@ describe('cactusFarmPlan', () => {
     const eastWall = places.filter(
       (item) => item.position.x === origin.x + 8 && item.position.y > origin.y
     );
-    expect(eastWall.length).toBe(28); // 7 ring columns × 4 layers
+    expect(eastWall.length).toBe(14); // 7 ring columns × 2 courses (y3 needs an inside stance water forbids)
     for (const item of eastWall) {
       expect(plan.indexOf(item)).toBeGreaterThan(lastWaterIdx);
     }
@@ -1334,6 +1340,55 @@ describe('cactusFarmPlan', () => {
     const bare = cactusFarmPlan(origin, { ...cactusConfig, build: false });
     expect(bare.length).toBeGreaterThan(0);
     expect(bare.every((item) => item.itemName === 'sand' || item.itemName === 'cactus')).toBe(true);
+  });
+
+  it('tiles identical basins eastward with columns, each with its own chest 14 apart', () => {
+    const plan2 = cactusFarmPlan(origin, { ...cactusConfig, columns: 2 });
+    const places2 = plan2.filter((item) => item.action === 'place');
+    const chests = places2.filter((item) => item.itemName === 'chest');
+    expect(chests.length).toBe(2);
+    expect(chests[1].position.x - chests[0].position.x).toBe(14);
+    expect(chests[1].position.z).toBe(chests[0].position.z);
+    expect(places2.filter((item) => item.itemName === 'cactus').length).toBe(12);
+    // column 1 is fully built before column 2 starts (its water stances need the gap open)
+    const firstCol2 = plan2.findIndex((item) => item.position.x >= origin.x + 13);
+    expect(firstCol2).toBeGreaterThan(0);
+    expect(plan2.slice(0, firstCol2).every((item) => item.position.x <= origin.x + 8)).toBe(true);
+    expect(plan2.slice(firstCol2).every((item) => item.position.x >= origin.x + 13)).toBe(true);
+  });
+
+  it('digs a stair and a full room before building each sub-surface basin layer', () => {
+    const plan2 = cactusFarmPlan(origin, { ...cactusConfig, basinLayers: 2 });
+    const digs = plan2.filter((item) => item.action === 'dig');
+    expect(digs.length).toBeGreaterThan(0);
+    // room envelope: 5 cells tall, its floor exactly 6 below the surface (one natural
+    // ceiling slab is left between the room top and the surface basin's floor)
+    const ys = digs.map((item) => item.position.y);
+    expect(Math.min(...ys)).toBe(origin.y - 6);
+    // every dig happens before the sub-surface basin's first placement
+    const subPlaces = plan2.filter((item) => item.action === 'place' && item.position.y < origin.y);
+    const firstSubPlace = plan2.indexOf(subPlaces[0]);
+    const stairAndRoom = digs.filter((item) => plan2.indexOf(item) > firstSubPlace);
+    expect(stairAndRoom.length).toBe(0);
+    // the lower level has its own complete basin: 2 chests total, 12 cacti
+    const places2 = plan2.filter((item) => item.action === 'place');
+    expect(places2.filter((item) => item.itemName === 'chest').length).toBe(2);
+    expect(places2.filter((item) => item.itemName === 'cactus').length).toBe(12);
+    // stair shaft lives OUTSIDE the room at x = -4 so its steps are never dug away
+    expect(digs.some((item) => item.position.x === origin.x - 4)).toBe(true);
+  });
+
+  it('always keeps the cell above the chest transparent (glass), even with opaque walls', () => {
+    const plan2 = cactusFarmPlan(origin, { ...cactusConfig, wallBlock: 'cobblestone' });
+    const places2 = plan2.filter((item) => item.action === 'place');
+    const chest = places2.find((item) => item.itemName === 'chest');
+    const aboveChest = places2.find(
+      (item) =>
+        item.position.x === chest!.position.x &&
+        item.position.y === chest!.position.y + 1 &&
+        item.position.z === chest!.position.z
+    );
+    expect(aboveChest?.itemName).toBe('glass');
   });
 });
 
@@ -1525,7 +1580,7 @@ describe('BotManager inventory actions', () => {
   });
 });
 
-describe('runWorkItem failure softening', () => {
+describe('multi-pass retry engine', () => {
   const fillConfig = (from: { x: number; y: number; z: number }, to: { x: number; y: number; z: number }) => ({
     enabled: true,
     mode: 'fill' as const,
@@ -1538,9 +1593,10 @@ describe('runWorkItem failure softening', () => {
     actionDelayMs: 10
   });
 
-  async function runFill(to: { x: number; y: number; z: number }) {
+  async function runFill(to: { x: number; y: number; z: number }, prepare?: (bot: FakeBot) => void) {
     vi.useFakeTimers();
     const fakeBot = new FakeBot(); // empty inventory → every fill placement returns false
+    prepare?.(fakeBot);
     const manager = new BotManager({
       userDataDir: '/tmp/afk-launcher-test',
       appVersion: '0.1.0',
@@ -1551,21 +1607,47 @@ describe('runWorkItem failure softening', () => {
     await manager.connect(profile.id);
     fakeBot.emit('spawn');
     await manager.startOperation(profile.id, { kind: 'area', config: fillConfig({ x: 0, y: 0, z: 0 }, to) });
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(5000);
     return manager.getState().sessions[profile.id].operations.area;
   }
 
-  it('blocks only after MAX consecutive failures, not on the first', async () => {
-    const op = await runFill({ x: 2, y: 0, z: 2 }); // 9 cells, all fail
+  it('blocks an all-failing fill only after two zero-progress passes', async () => {
+    const op = await runFill({ x: 1, y: 0, z: 1 }); // 4 cells, all fail
     expect(op.state).toBe('blocked');
-    expect(op.detail).toContain('consecutive failures');
-    expect(op.stats.failed).toBe(8); // blocked exactly at the streak cap
+    expect(op.detail).toContain('still failing');
+    expect(op.stats.failed).toBe(8); // 4 cells × 2 full passes
+    expect(op.stats.skipped).toBe(4); // abandoned once genuinely stuck
+    expect(op.completed).toBe(op.total); // progress bar closes out honestly
   });
 
-  it('finishes a small all-failing fill instead of aborting (under the cap)', async () => {
-    const op = await runFill({ x: 1, y: 0, z: 1 }); // 4 cells, all fail
+  it('abandons a wedged pass at the fail-streak cap instead of grinding every cell', async () => {
+    const op = await runFill({ x: 2, y: 0, z: 2 }); // 9 cells, all fail
+    expect(op.state).toBe('blocked');
+    // Each pass attempts 8 (the streak cap) and rolls the 9th over unattempted.
+    expect(op.stats.failed).toBe(16);
+    expect(op.stats.skipped).toBe(9);
+  });
+
+  it('rescues flaky cells in a later pass and completes with no skips', async () => {
+    const op = await runFill({ x: 1, y: 0, z: 1 }, (bot) => {
+      attachWorld(bot, 'dirt');
+      bot.inventory.items = () => [{ name: 'cobblestone', displayName: 'Cobblestone', count: 64 }];
+      const b = bot as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      const realPlace = b.placeBlock as unknown as (ref: unknown, face: unknown) => Promise<void>;
+      let calls = 0;
+      // First two placements flake (transient throw), the rest land — the retry
+      // pass must pick the failed cells back up and finish clean.
+      b.placeBlock = vi.fn(async (ref: unknown, face: unknown) => {
+        calls += 1;
+        if (calls <= 2) throw new Error('transient');
+        return realPlace(ref, face);
+      });
+    });
     expect(op.state).toBe('complete');
-    expect(op.stats.failed).toBe(4);
+    expect(op.stats.placed).toBe(4);
+    expect(op.stats.failed).toBe(2);
+    expect(op.stats.skipped ?? 0).toBe(0);
+    expect(op.completed).toBe(op.total);
   });
 });
 

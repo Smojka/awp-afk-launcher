@@ -145,6 +145,7 @@ type BotLike = RoutineBot &
       goto?: (goal: unknown) => Promise<void>;
       setMovements?: (movements: unknown) => void;
       setGoal?: (goal: unknown | null) => void;
+      stop?: () => void;
     };
     openContainer?: (block: BlockLike, direction?: unknown, cursorPos?: unknown) => Promise<WindowLike>;
     closeWindow?: (window: WindowLike) => void;
@@ -198,6 +199,17 @@ interface ManagedSession {
   areaAnchor: PositionSnapshot | null;
   /** Consecutive place/water failures per op; one bad cell no longer aborts the whole run. */
   operationFailStreak: Map<OperationKind, number>;
+  /** Cells that failed in the current pass, re-queued (in plan order) for the next pass. */
+  operationRetry: Map<OperationKind, OperationWorkItem[]>;
+  /** Pass number, cells completed this pass, and consecutive zero-progress passes. */
+  operationPass: Map<OperationKind, { pass: number; progressed: number; zeroStreak: number }>;
+  /** Frozen-bot watchdog: consecutive failures without the bot moving, plus escalation count. */
+  operationFrozen: Map<OperationKind, { x: number; y: number; z: number; count: number; heals: number }>;
+  /** Self-heal reconnects triggered this session per op — hard-capped so a broken world can't loop forever. */
+  selfHealCount: Map<OperationKind, number>;
+  /** One-shot origin override consumed by the next start of that op: an auto-resume must
+   *  rebuild the plan at the ORIGINAL farm origin, not wherever the bot happened to drop. */
+  resumeAnchor: Map<OperationKind, PositionSnapshot>;
   /** Per-op timestamp before which the storage gate won't run another trip (prevents thrash/livelock). */
   storageCooldownUntil: Map<OperationKind, number>;
   /** Ops that were running when the bot involuntarily dropped; replayed after reconnect + validation. */
@@ -224,7 +236,7 @@ interface ParsedCommandNode {
 }
 
 type OperationWorkItem = {
-  action: 'dig' | 'place' | 'till' | 'water';
+  action: 'dig' | 'place' | 'till' | 'water' | 'barrier';
   position: PositionSnapshot;
   itemName?: string;
   /** Walk within reach before acting (build steps that may be outside the bot's stationary reach). */
@@ -235,6 +247,10 @@ type OperationWorkItem = {
   against?: PositionSnapshot;
   /** Hold sneak while placing — required when the reference block is interactive (chest, hopper). */
   sneak?: boolean;
+  /** For 'barrier': how many times failed work has already been re-run through this barrier. */
+  barrierAttempts?: number;
+  /** Re-till the block below before placing (crop plants: farmland may have been trampled). */
+  tillUnder?: boolean;
 };
 
 interface DiscordRuntime {
@@ -252,17 +268,28 @@ const DEFAULT_OPERATION_DELAY_MS = 550;
 const MAX_OPERATION_VOLUME = 4096;
 // Largest crop-farm half-extent (33x33 field). Well under MAX_OPERATION_VOLUME.
 const MAX_CROP_RADIUS = 16;
-// A single failed place/till/water no longer kills the whole operation; only this many
-// consecutive hard failures blocks it (one bad cell in a big fill shouldn't abort the run).
+// A single failed place/till/water no longer kills the whole operation. After this many
+// consecutive hard failures the CURRENT PASS is abandoned (remaining cells roll into the
+// retry pass) so the bot restarts from fresh ground instead of grinding a wedged spot.
 const MAX_CONSECUTIVE_PLACE_FAILS = 8;
+// Frozen-bot watchdog: this many consecutive failures with the feet not moving at all
+// triggers recovery (pathfinder reload, then a self-heal reconnect).
+const FROZEN_FAILURE_THRESHOLD = 4;
+// Self-heal reconnects per op per session before we give up and block honestly.
+const MAX_SELF_HEAL_RECONNECTS = 3;
 // After a storage trip the gate waits this long before considering another, so a half-empty
 // supply chest (or an all-kept full inventory) can't send the bot back and forth every tick.
 const STORAGE_COOLDOWN_MS = 5000;
 const DISCORD_API_BASE = 'https://discord.com/api/v10';
-const PLACE_BLOCK_TIMEOUT_MS = 10000;
+// LAN place confirmations land in <500ms; a silently-rejected click (Paper's server-side
+// raytrace) never confirms at all, so a long wait here just slows every bad cell down.
+// Failures roll into the multi-pass retry, so fail fast.
+const PLACE_BLOCK_TIMEOUT_MS = 4000;
 const CONTAINER_TIMEOUT_MS = 10000;
-const PATHFIND_TIMEOUT_MS = 8000;
-const SHORT_HOP_TIMEOUT_MS = 5000;
+// Outer hard cap on walks. thinkTimeout (3s) already bounds no-path rejections, so this
+// only fires on genuinely long/blocked EXECUTIONS — and hitting it costs a pathfinder
+// reload (see gotoWithTimeout), so keep it generous.
+const PATHFIND_TIMEOUT_MS = 20000;
 const INVENTORY_ACTION_TIMEOUT_MS = 8000;
 // Modern/proxy servers usually never answer serverbound tab_complete (they resolve
 // command names client-side from declare_commands and only reply for ask_server args),
@@ -277,6 +304,8 @@ type PathfinderMovementsCtor = new (bot: BotLike) => Record<string, unknown>;
 type PathfinderGoals = { GoalNear: new (x: number, y: number, z: number, range: number) => unknown };
 let pathfinderMovements: PathfinderMovementsCtor | null = null;
 let pathfinderGoals: PathfinderGoals | null = null;
+/** Kept so a degraded pathfinder instance can be replaced in place (loadPlugin re-injects). */
+let pathfinderPluginRef: unknown = null;
 
 const OPERATION_LABELS: Record<OperationKind, string> = {
   cactusFarm: 'Cactus farm',
@@ -306,7 +335,9 @@ const DEFAULT_MODULES: BotModulesConfig = {
     breakBlock: 'oak_fence',
     buildCollection: true,
     rowPairs: 1,
-    wallBlock: 'glass'
+    wallBlock: 'glass',
+    columns: 1,
+    basinLayers: 1
   },
   cropFarm: {
     enabled: false,
@@ -699,6 +730,8 @@ export class BotManager extends EventEmitter {
     const session = this.requireSession(profileId);
     this.stopOperationTimer(session, kind);
     session.operationQueues.delete(kind);
+    session.operationRetry.delete(kind);
+    session.operationPass.delete(kind);
     // Operator-initiated stop: forget the resume record so a later reconnect won't restart it.
     session.resumeOps.delete(kind);
     session.storageCooldownUntil.delete(kind);
@@ -1023,6 +1056,11 @@ export class BotManager extends EventEmitter {
         generatorOrigin: null,
         areaAnchor: null,
         operationFailStreak: new Map(),
+        operationRetry: new Map(),
+        operationPass: new Map(),
+        operationFrozen: new Map(),
+        selfHealCount: new Map(),
+        resumeAnchor: new Map(),
         storageCooldownUntil: new Map(),
         resumeOps: new Map(),
         involuntaryDrop: false,
@@ -1192,6 +1230,17 @@ export class BotManager extends EventEmitter {
     });
   }
 
+  /** True while an operation that drives the bot's movement/aim is running. */
+  private hasActiveDrivingOperation(session: ManagedSession): boolean {
+    const ops = session.snapshot.operations;
+    return (
+      ops.cactusFarm.state === 'running' ||
+      ops.cropFarm.state === 'running' ||
+      ops.area.state === 'running' ||
+      ops.generator.state === 'running'
+    );
+  }
+
   private startRoutine(session: ManagedSession, bot: BotLike): void {
     session.routine?.stop();
     if (this.shouldHoldRoutineForHunger(session, bot)) {
@@ -1204,7 +1253,11 @@ export class BotManager extends EventEmitter {
       emitEvent: (event) => {
         this.pushEvent(session, event.type, event.tone, event.label, event.detail);
         this.emitState();
-      }
+      },
+      // The anti-AFK jiggle exists for IDLE bots. While an operation is walking/placing,
+      // a random forced look or a jump pulse lands mid-goto and corrupts the pathfinder
+      // (walks time out, builds crawl) — and the operation itself is anti-AFK anyway.
+      shouldHold: () => this.hasActiveDrivingOperation(session)
     });
     session.routine.start();
     session.startupCompleted = true;
@@ -1405,7 +1458,10 @@ export class BotManager extends EventEmitter {
 
   private scheduleReconnect(session: ManagedSession): void {
     if (session.desiredStop || !session.profile.reconnect.enabled) return;
-    if (session.snapshot.reconnectAttempts >= session.profile.reconnect.maxAttempts) {
+    // maxAttempts 0 (the normalizer's default) means UNLIMITED — treating it as a hard
+    // limit made every default-configured profile give up on the very first drop.
+    const maxAttempts = session.profile.reconnect.maxAttempts;
+    if (maxAttempts > 0 && session.snapshot.reconnectAttempts >= maxAttempts) {
       this.updateStatus(session, 'error', 'Reconnect limit reached');
       return;
     }
@@ -1434,13 +1490,50 @@ export class BotManager extends EventEmitter {
   }
 
   private startCactusFarm(session: ManagedSession, bot: BotLike, config: CactusFarmConfig): void {
-    const origin = botPosition(bot);
+    const anchor = session.resumeAnchor.get('cactusFarm');
+    session.resumeAnchor.delete('cactusFarm');
+    const origin = anchor ?? botPosition(bot);
     if (!origin) {
       this.blockOperation(session, 'cactusFarm', 'Bot position is unavailable.');
       return;
     }
     session.cactusFarmOrigin = origin;
+    if (config.build) {
+      // Ground pre-flight: the bot works from stance lanes all around the basin(s), and
+      // pathfinder wobble reaches one cell further — a missing floor there means a fall
+      // (observed live: the bot walked off a platform edge and dropped 60 blocks).
+      // Only LOADED air counts as missing; unloaded chunks are unknown-and-allowed.
+      const columns = Math.max(1, Math.floor(config.columns ?? 1));
+      const ringZMin = -4;
+      const ringZMax = 4 * config.rowPairs + 1;
+      const xMax = (columns - 1) * CACTUS_COLUMN_SPACING + 12;
+      let missing = 0;
+      if (typeof bot.blockAt === 'function') {
+        for (let x = -6; x <= xMax; x++) {
+          for (let z = ringZMin - 2; z <= ringZMax + 2; z++) {
+            const block = bot.blockAt(toVec3(addPosition(origin, { x, y: -1, z })));
+            if (block && isAirBlock(block)) missing += 1;
+          }
+        }
+      }
+      if (missing > 0) {
+        this.blockOperation(
+          session,
+          'cactusFarm',
+          `Ground is missing under the farm footprint (${missing} cells). Flatten the area (including ~4 blocks of margin on every side) first.`
+        );
+        return;
+      }
+    }
     const plan = cactusFarmPlan(origin, config);
+    if (plan.length > MAX_OPERATION_VOLUME) {
+      this.blockOperation(
+        session,
+        'cactusFarm',
+        `Plan is too large: ${plan.length}/${MAX_OPERATION_VOLUME} steps. Reduce rowPairs, columns or basinLayers.`
+      );
+      return;
+    }
     const needs = cactusMaterialNeeds(plan);
     const missing = Object.entries(needs)
       .map(([itemName, need]) => ({ itemName, need, have: inventoryItemCount(bot, itemName) }))
@@ -1466,7 +1559,9 @@ export class BotManager extends EventEmitter {
   }
 
   private startCropFarm(session: ManagedSession, bot: BotLike, config: CropFarmConfig): void {
-    session.cropFarmOrigin = null;
+    const anchor = session.resumeAnchor.get('cropFarm');
+    session.resumeAnchor.delete('cropFarm');
+    session.cropFarmOrigin = anchor ?? null;
     if (!config.build || !isFarmlandCrop(config.crop)) {
       if (config.build && !isFarmlandCrop(config.crop)) {
         this.pushEvent(session, 'farm', 'warn', 'Crop build skipped', `${cropLabel(config.crop)} farmland'e dikilmez, hasat döngüsüne geçiliyor.`);
@@ -1474,7 +1569,7 @@ export class BotManager extends EventEmitter {
       this.beginCropHarvest(session, bot, config);
       return;
     }
-    const origin = botPosition(bot);
+    const origin = anchor ?? botPosition(bot);
     if (!origin) {
       this.blockOperation(session, 'cropFarm', 'Bot position is unavailable.');
       return;
@@ -1622,11 +1717,13 @@ export class BotManager extends EventEmitter {
   }
 
   private startAreaOperation(session: ManagedSession, bot: BotLike, config: AreaOperationConfig): void {
-    session.areaAnchor = botPosition(bot);
+    const anchor = session.resumeAnchor.get('area');
+    session.resumeAnchor.delete('area');
+    session.areaAnchor = anchor ?? botPosition(bot);
     let from = config.from;
     let to = config.to;
     if (config.coords === 'relative') {
-      const origin = botPosition(bot);
+      const origin = anchor ?? botPosition(bot);
       if (!origin) {
         this.blockOperation(session, 'area', 'Bot position is unavailable.');
         return;
@@ -1823,6 +1920,8 @@ export class BotManager extends EventEmitter {
     delayMs: number,
     onDrained?: () => void
   ): void {
+    session.operationRetry.set(kind, []);
+    session.operationPass.set(kind, { pass: 1, progressed: 0, zeroStreak: 0 });
     const tick = () => {
       if (session.bot !== bot || session.snapshot.operations[kind].state !== 'running') return;
       const reschedule = () => {
@@ -1839,6 +1938,31 @@ export class BotManager extends EventEmitter {
         const queue = session.operationQueues.get(kind) ?? [];
         const work = queue.shift();
         if (!work) {
+          // Pass finished. Failed cells retry in a fresh pass (the bot repositions,
+          // dependencies placed later in this pass now exist). Two consecutive
+          // zero-progress passes mean the remaining cells are genuinely unbuildable.
+          const retry = session.operationRetry.get(kind) ?? [];
+          if (retry.length > 0) {
+            const passState = session.operationPass.get(kind) ?? { pass: 1, progressed: 0, zeroStreak: 0 };
+            const zeroStreak = passState.progressed === 0 ? passState.zeroStreak + 1 : 0;
+            if (zeroStreak >= 2) {
+              this.addOperationProgress(session, kind, retry.length, { skipped: retry.length });
+              this.blockOperation(
+                session,
+                kind,
+                `${retry.length} cells still failing after ${passState.pass} passes.`
+              );
+              return;
+            }
+            session.operationQueues.set(kind, retry);
+            session.operationRetry.set(kind, []);
+            session.operationPass.set(kind, { pass: passState.pass + 1, progressed: 0, zeroStreak });
+            session.operationFailStreak.set(kind, 0);
+            this.updateOperation(session, kind, 'running', `Pass ${passState.pass + 1}: retrying ${retry.length} cells`);
+            this.emitState();
+            reschedule();
+            return;
+          }
           this.stopOperationTimer(session, kind);
           if (onDrained) {
             onDrained();
@@ -1858,17 +1982,149 @@ export class BotManager extends EventEmitter {
   }
 
   /**
-   * A single failed place/water/dig no longer wedges the whole operation. Skip the cell, count
-   * it, and keep going — only after {@link MAX_CONSECUTIVE_PLACE_FAILS} failures in a row (a
-   * genuinely stuck build) do we block. Any success resets the streak (see {@link runWorkItem}).
+   * A failed place/water/dig no longer wedges the operation OR permanently skips the cell.
+   * The item is re-queued into the next pass (plan order is preserved: earlier failures land
+   * earlier in the retry list, so dependency chains — sand→cactus, fence→fence — rebuild in
+   * order). {@link MAX_CONSECUTIVE_PLACE_FAILS} failures in a row abandon the current pass so
+   * a wedged bot restarts from fresh ground; the drained-queue logic in
+   * {@link scheduleOperationQueue} then either starts the next pass or, if a full pass made
+   * zero progress, blocks the run.
    */
-  private recordWorkFailure(session: ManagedSession, kind: OperationKind, detail: string): void {
+  private recordWorkFailure(
+    session: ManagedSession,
+    kind: OperationKind,
+    work: OperationWorkItem,
+    detail: string,
+    startedAt?: number
+  ): void {
     const streak = (session.operationFailStreak.get(kind) ?? 0) + 1;
     session.operationFailStreak.set(kind, streak);
-    // Advance past the bad cell so the queue doesn't stall on it.
-    this.addOperationProgress(session, kind, 1, { skipped: 1, failed: 1 });
+    const retry = session.operationRetry.get(kind) ?? [];
+    retry.push(work);
+    session.operationRetry.set(kind, retry);
+    // Attempt-level stat only — `completed` advances when the cell finally lands (or is
+    // permanently abandoned by a zero-progress pass), so each cell counts exactly once.
+    this.addOperationStats(session, kind, { failed: 1 });
+    if (process.env.AFK_PFDBG) console.log('[PFDBG] retry-queued:', detail);
+    // Two failure shapes feed the frozen watchdog: attempts that spent real time walking or
+    // placing, and INSTANT failures far away from the item's stance (walking should have
+    // happened but didn't — a dead pathfinder fails fast from the wrong spot). Instant
+    // failures AT the stance are dependency misses (chain ref not placed yet), not freezes.
+    const spentTime = startedAt === undefined || Date.now() - startedAt >= 1500;
+    const target = work.stance ?? work.position;
+    const here = session.bot ? botPosition(session.bot) : null;
+    const farFromStance =
+      here != null &&
+      Math.max(Math.abs(here.x - target.x), Math.abs(here.z - target.z)) > 3;
+    if (spentTime || farFromStance) {
+      this.watchFrozenBot(session, kind, detail);
+    }
     if (streak >= MAX_CONSECUTIVE_PLACE_FAILS) {
-      this.blockOperation(session, kind, `Aborted after ${streak} consecutive failures. Last: ${detail}`);
+      const queue = session.operationQueues.get(kind);
+      if (queue?.length) retry.push(...queue.splice(0));
+      session.operationFailStreak.set(kind, 0);
+    }
+  }
+
+  /** A work item resolved (placed/dug/skipped-as-done): reset the wedge streak, count pass progress. */
+  private recordWorkProgress(session: ManagedSession, kind: OperationKind): void {
+    session.operationFailStreak.set(kind, 0);
+    session.operationFrozen.delete(kind);
+    const passState = session.operationPass.get(kind);
+    if (passState) passState.progressed += 1;
+  }
+
+  /**
+   * Failures that pile up while the bot's feet never move mean the CLIENT is wedged (a dead
+   * pathfinder / physics desync) — retry passes can't fix that because every walk silently
+   * no-ops. Escalate: first a hard pathfinder reset, then a self-heal reconnect (a fresh
+   * mineflayer instance) that rides the existing involuntary-drop auto-resume, which skips
+   * already-built cells and finishes the run. Capped so a genuinely broken world still ends
+   * in an honest block instead of a reconnect loop.
+   */
+  private watchFrozenBot(session: ManagedSession, kind: OperationKind, detail: string): void {
+    const bot = session.bot;
+    const pos = bot ? botPosition(bot) : null;
+    // No pathfinder (unit tests / bare sessions) → the bot can't walk anyway; "not moving"
+    // carries no signal there.
+    if (!bot?.pathfinder || !pos) return;
+    const frozen = session.operationFrozen.get(kind);
+    if (
+      frozen &&
+      Math.abs(pos.x - frozen.x) < 0.3 &&
+      Math.abs(pos.z - frozen.z) < 0.3 &&
+      Math.abs(pos.y - frozen.y) < 0.5
+    ) {
+      frozen.count += 1;
+    } else {
+      session.operationFrozen.set(kind, { x: pos.x, y: pos.y, z: pos.z, count: 1, heals: frozen?.heals ?? 0 });
+      return;
+    }
+    if (frozen.count < FROZEN_FAILURE_THRESHOLD) return;
+    frozen.count = 0;
+    frozen.heals += 1;
+    if (frozen.heals <= 2) {
+      // A pathfinder instance degrades cumulatively after many aborted gotos until it
+      // stops producing paths at all (verified live: a FRESH bot pathed the identical
+      // goal in 2.7s while the build bot sat frozen). loadPlugin re-injects a brand-new
+      // pathfinder in place — the cheapest full revival.
+      this.reloadPathfinder(bot);
+      this.pushEvent(session, operationEventType(kind), 'warn', 'Pathfinder reloaded', `Bot frozen while failing: ${detail}`);
+      return;
+    }
+    const heals = session.selfHealCount.get(kind) ?? 0;
+    if (heals >= MAX_SELF_HEAL_RECONNECTS) {
+      this.blockOperation(session, kind, `Bot repeatedly frozen (${heals} reconnects). Last: ${detail}`);
+      return;
+    }
+    session.selfHealCount.set(kind, heals + 1);
+    this.selfHealReconnect(session, kind, detail);
+  }
+
+  /** Replace a degraded pathfinder with a fresh instance (plugin re-inject + movements). */
+  private reloadPathfinder(bot: BotLike): void {
+    try {
+      bot.pathfinder?.setGoal?.(null);
+      bot.setControlState?.('sneak', false);
+      bot.setControlState?.('jump', false);
+      bot.setControlState?.('forward', false);
+      // bot.loadPlugin dedupes on the plugin reference, so re-injecting requires calling
+      // the plugin function directly. It overwrites bot.pathfinder wholesale; the old
+      // instance's physics listeners stay behind but are inert with their goal cleared.
+      if (typeof pathfinderPluginRef === 'function') {
+        (pathfinderPluginRef as (bot: BotLike) => void)(bot);
+        configurePathfinderMovements(bot);
+      }
+    } catch {
+      // best-effort; the reconnect rung above this one is the real recovery
+    }
+  }
+
+  /** Tear the wedged connection down and bring a fresh bot back; auto-resume replays the op. */
+  private selfHealReconnect(session: ManagedSession, kind: OperationKind, detail: string): void {
+    const bot = session.bot;
+    if (!bot) return;
+    this.pushEvent(
+      session,
+      operationEventType(kind),
+      'warn',
+      'Self-heal reconnect',
+      `Bot frozen; reconnecting to recover. Last failure: ${detail}`
+    );
+    session.desiredStop = false;
+    try {
+      bot.quit?.('ChunkKeeper self-heal reconnect');
+    } catch {
+      // if quit throws the 'end' handler still fires on socket teardown
+    }
+    // The 'end' handler marks the drop involuntary and may arm the profile's reconnect
+    // backoff; connect directly as a fallback for profiles with reconnect disabled. The
+    // teardown ('end') can land late, so probe a few times instead of exactly once.
+    for (const delay of [2000, 7000, 15000]) {
+      setTimeout(() => {
+        if (session.bot || session.desiredStop || session.reconnectTimer) return;
+        void this.connect(session.profile.id).catch(() => {});
+      }, delay);
     }
   }
 
@@ -1878,40 +2134,92 @@ export class BotManager extends EventEmitter {
     kind: OperationKind,
     work: OperationWorkItem
   ): Promise<void> {
+    const startedAt = Date.now();
     try {
+      if (work.action === 'barrier') {
+        // Point-of-no-return checkpoint (e.g. before the cactus basin is flooded and
+        // sealed): anything that failed so far must be repaired NOW, while it is still
+        // reachable — the end-of-plan retry passes would arrive after the region closes.
+        const retry = session.operationRetry.get(kind) ?? [];
+        const attempts = work.barrierAttempts ?? 0;
+        if (retry.length > 0 && attempts < 3) {
+          const queue = session.operationQueues.get(kind) ?? [];
+          queue.unshift(...retry.splice(0), { ...work, barrierAttempts: attempts + 1 });
+          session.operationFailStreak.set(kind, 0);
+          if (process.env.AFK_PFDBG) console.log('[PFDBG] barrier: re-running', queue.length, 'items before sealing (round', attempts + 1, ')');
+          return; // the barrier re-queued itself; don't count progress yet
+        }
+        this.recordWorkProgress(session, kind);
+        this.addOperationProgress(session, kind, 1, {});
+        return;
+      }
       if (work.action === 'dig') {
         if (typeof bot.blockAt !== 'function' || typeof bot.dig !== 'function') {
           this.blockOperation(session, kind, 'Mineflayer block/dig APIs are unavailable.');
           return;
         }
-        if (work.walk) await this.walkWithinReach(bot, work.position);
-        const block = bot.blockAt(toVec3(work.position));
-        if (!block || isAirBlock(block)) {
-          session.operationFailStreak.set(kind, 0);
+        // Resume fast-path: skip already-dug cells BEFORE walking anywhere, or a
+        // resumed dig-heavy plan re-treads the entire excavation at walking pace.
+        const preCheck = bot.blockAt(toVec3(work.position));
+        if (preCheck && isAirBlock(preCheck)) {
+          this.recordWorkProgress(session, kind);
           this.addOperationProgress(session, kind, 1, { skipped: 1 });
           return;
         }
+        if (work.walk) await this.walkWithinReach(bot, work.position);
+        const block = bot.blockAt(toVec3(work.position));
+        if (!block || isAirBlock(block)) {
+          this.recordWorkProgress(session, kind);
+          this.addOperationProgress(session, kind, 1, { skipped: 1 });
+          return;
+        }
+        if (work.walk && !this.withinActionReach(bot, work.position)) {
+          // NEVER dig from out of reach: the server discards the break but the client
+          // clears the block locally — phantom air that poisons every later decision.
+          this.recordWorkFailure(session, kind, work, `dig at ${formatPosition(work.position)} out of reach`, startedAt);
+          return;
+        }
         await Promise.resolve(bot.dig(block));
-        session.operationFailStreak.set(kind, 0);
+        // mineflayer clears the block CLIENT-side as soon as its own dig timer elapses; if
+        // the server rejected the break (reach/line-of-sight validation) it resends the
+        // real block a tick later. Trusting the optimistic clear poisons the client world —
+        // observed live: a bot "dug" a 789-block room that mostly never existed server-side
+        // and then walked down a phantom staircase. Wait for the correction and verify.
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        const after = bot.blockAt(toVec3(work.position));
+        if (after && !isAirBlock(after)) {
+          this.recordWorkFailure(session, kind, work, `dig at ${formatPosition(work.position)} rejected by server`, startedAt);
+          return;
+        }
+        this.recordWorkProgress(session, kind);
         this.addOperationProgress(session, kind, 1, { mined: 1 });
       } else if (work.action === 'till') {
         const tilled = await this.tillFarmland(bot, work.position);
         if (!tilled) {
-          session.operationFailStreak.set(kind, 0);
+          this.recordWorkProgress(session, kind);
           this.addOperationProgress(session, kind, 1, { skipped: 1 });
           return;
         }
-        session.operationFailStreak.set(kind, 0);
+        this.recordWorkProgress(session, kind);
         this.addOperationProgress(session, kind, 1, { tilled: 1 });
       } else if (work.action === 'water') {
         const result = await this.placeWaterSource(bot, work.position, work.stance);
         if (!result.ok) {
-          this.recordWorkFailure(session, kind, `water at ${formatPosition(work.position)} (${result.reason})`);
+          this.recordWorkFailure(session, kind, work, `water at ${formatPosition(work.position)} (${result.reason})`, startedAt);
           return;
         }
-        session.operationFailStreak.set(kind, 0);
+        this.recordWorkProgress(session, kind);
         this.addOperationProgress(session, kind, 1, { watered: 1 });
       } else {
+        if (work.tillUnder && typeof bot.blockAt === 'function') {
+          // Farmland can revert (trampled or dried) between the till pass and this plant —
+          // re-till in place instead of failing the cell forever.
+          const belowPos = addPosition(work.position, { x: 0, y: -1, z: 0 });
+          const below = bot.blockAt(toVec3(belowPos));
+          if (below && below.name !== 'farmland' && !isAirBlock(below)) {
+            await this.tillFarmland(bot, belowPos);
+          }
+        }
         const placed = work.walk
           ? await this.placeBlockAgainst(bot, work.itemName ?? 'cobblestone', work.position, {
               walk: true,
@@ -1921,18 +2229,18 @@ export class BotManager extends EventEmitter {
             })
           : await this.placeItemAt(bot, work.itemName ?? 'cobblestone', work.position);
         if (!placed) {
-          this.recordWorkFailure(session, kind, `place ${work.itemName ?? 'block'} at ${formatPosition(work.position)}`);
+          this.recordWorkFailure(session, kind, work, `place ${work.itemName ?? 'block'} at ${formatPosition(work.position)}`, startedAt);
           return;
         }
-        session.operationFailStreak.set(kind, 0);
+        this.recordWorkProgress(session, kind);
         this.addOperationProgress(session, kind, 1, { placed: 1 });
       }
       this.updateLiveTelemetry(session);
       this.emitState();
     } catch (error) {
-      // A transient throw (path timeout, momentary desync) skips the cell like any other
-      // failure instead of instakilling the run; a truly stuck build still trips the streak.
-      this.recordWorkFailure(session, kind, formatError(error));
+      // A transient throw (path timeout, momentary desync) re-queues the cell like any
+      // other failure instead of instakilling the run.
+      this.recordWorkFailure(session, kind, work, formatError(error), startedAt);
       this.emitState();
     }
   }
@@ -1952,21 +2260,104 @@ export class BotManager extends EventEmitter {
     return true;
   }
 
+  /**
+   * Run a goto with a MOVEMENT watchdog and an outer hard cap.
+   *
+   * mineflayer-pathfinder livelocks on certain goals: it computes a path whose first move
+   * is a diagonal squeeze past partial blocks (reproduced deterministically standing in a
+   * pocket formed by a placed block + a hopper), then the executor bumps the corner
+   * forever — the goto neither reaches the goal nor rejects, and even `thinkTimeout`
+   * never fires because computing is done. Waiting the full cap costs 20s per attempt, so
+   * detect the livelock directly: if the feet don't move for several consecutive seconds
+   * while the goto is pending, cancel the goal (`setGoal(null)`, NEVER `stop()` — see the
+   * sticky stopPathing flag) and reject as "stalled" so the caller can nudge to open
+   * ground and retry.
+   */
+  private async gotoWithTimeout(bot: BotLike, goal: unknown, ms: number, label: string): Promise<void> {
+    if (typeof bot.pathfinder?.goto !== 'function') return;
+    const gotoPromise = Promise.resolve(bot.pathfinder.goto(goal));
+    const deadline = Date.now() + ms;
+    let last = botPosition(bot);
+    // The A* compute phase (bounded by thinkTimeout = 3s) legitimately keeps the bot
+    // still, so require more than that before calling it a stall.
+    let still = 0;
+    for (;;) {
+      const winner = await Promise.race([
+        gotoPromise.then(
+          () => 'done' as const,
+          (error) => {
+            throw error;
+          }
+        ),
+        new Promise<'tick'>((resolve) => setTimeout(() => resolve('tick'), 1000))
+      ]);
+      if (winner === 'done') return;
+      const now = botPosition(bot);
+      if (
+        last &&
+        now &&
+        Math.abs(now.x - last.x) < 0.15 &&
+        Math.abs(now.y - last.y) < 0.15 &&
+        Math.abs(now.z - last.z) < 0.15
+      ) {
+        still += 1;
+      } else {
+        still = 0;
+      }
+      last = now;
+      if (still >= 4 || Date.now() > deadline) {
+        gotoPromise.catch(() => {}); // the cancelled goto rejects later; not an unhandled rejection
+        // Cancelling a livelocked executor leaves the instance subtly broken — after a few
+        // such aborts even a trivial open-ground L-path stalls (observed live), while a
+        // fresh instance handles everything. Replace it wholesale on every abort.
+        if (process.env.AFK_PFDBG) {
+          const p = botPosition(bot);
+          console.log('[PFDBG] goto abort:', label, still >= 4 ? 'STALLED' : 'CAP', `at ${p ? `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}` : '?'} → reloading pathfinder`);
+        }
+        this.reloadPathfinder(bot);
+        throw new Error(still >= 4 ? `${label} stalled (no movement)` : `${label} timed out after ${ms}ms`);
+      }
+    }
+  }
+
   // Walk close enough to act on a target. No-op without the pathfinder plugin
   // (e.g. in unit tests), so callers must still tolerate out-of-reach failures.
   private async walkWithinReach(bot: BotLike, position: PositionSnapshot, range = 3): Promise<void> {
     if (!pathfinderGoals || typeof bot.pathfinder?.goto !== 'function') return;
+    const inReach = (p: PositionSnapshot | null): boolean =>
+      p != null &&
+      Math.abs(p.x - position.x) + Math.abs(p.z - position.z) <= range &&
+      Math.abs(p.y - position.y) <= 4;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = botPosition(bot);
+      if (inReach(before) || !before) return;
+      try {
+        const goal = new pathfinderGoals.GoalNear(position.x, position.y, position.z, range);
+        await this.gotoWithTimeout(bot, goal, PATHFIND_TIMEOUT_MS, 'pathfind');
+      } catch {
+        // stall/timeout — the nudge below decides whether another attempt is useful
+      }
+      const now = botPosition(bot);
+      if (inReach(now) || !now) return;
+      // Same pocket-livelock escape as walkToStance: if the goto produced zero
+      // movement, blind-walk to new ground before re-planning.
+      if (Math.abs(now.x - before.x) < 0.4 && Math.abs(now.z - before.z) < 0.4) {
+        await this.nudgeWalk(bot, position);
+      }
+    }
+  }
+
+  /** True when the bot's eye can plausibly act on the target block server-side. Acting
+   *  from further away gets silently discarded by Paper — and for DIGS the mineflayer
+   *  client still clears the block locally, poisoning its world view with phantom air. */
+  private withinActionReach(bot: BotLike, position: PositionSnapshot): boolean {
+    if (!pathfinderGoals || typeof bot.pathfinder?.goto !== 'function') return true; // tests / bare sessions
     const here = botPosition(bot);
-    if (here && Math.abs(here.x - position.x) + Math.abs(here.z - position.z) <= range && Math.abs(here.y - position.y) <= 4) {
-      return;
-    }
-    try {
-      const goal = new pathfinderGoals.GoalNear(position.x, position.y, position.z, range);
-      await withTimeout(Promise.resolve(bot.pathfinder.goto(goal)), PATHFIND_TIMEOUT_MS, 'pathfind');
-    } catch {
-      // A failed walk just means the subsequent place/dig will fail with a clear
-      // blocked message — no need to surface the pathfinding error itself.
-    }
+    if (!here) return true;
+    const dx = here.x - (position.x + 0.5);
+    const dy = here.y + 1.62 - (position.y + 0.5);
+    const dz = here.z - (position.z + 0.5);
+    return Math.hypot(dx, dy, dz) <= 4.8;
   }
 
   // Stand in an explicit clear cell (a build's odd-x lane) before placing. Build
@@ -1987,59 +2378,88 @@ export class BotManager extends EventEmitter {
       return exact ? dx === 0 && dz === 0 && dy <= 2 : dx <= 1 && dz <= 1 && dy <= 2;
     };
 
-    // Long-range A* hangs on this terrain (it computes for seconds and never moves
-    // the bot), but 1–2 block hops resolve instantly. So close the distance with a
-    // sequence of short hops instead of one long goto.
-    const hop = async (x: number, z: number, range = 1): Promise<void> => {
+    // Direct full A* only. A healthy pathfinder routes farm-scale goals (including
+    // around/over built structures) in ~1-3s, and thinkTimeout bounds the no-path
+    // case — the old short-hop stepper existed to work around what turned out to be
+    // wedged-instance symptoms, and its frequent aborted gotos were themselves the
+    // thing that wedged the pathfinder. If an attempt produces zero movement, escape
+    // with a blind nudge walk (no pathfinder) and try again from new ground.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = botPosition(bot);
+      if (atStance(before) || !before) return;
       try {
-        await withTimeout(Promise.resolve(bot.pathfinder?.goto?.(new goals.GoalNear(x, stance.y, z, range))), SHORT_HOP_TIMEOUT_MS, 'hop');
-      } catch {
-        // ignore; the stuck-detection below decides whether to keep trying
+        await this.gotoWithTimeout(bot, new goals.GoalNear(stance.x, stance.y, stance.z, exact ? 0 : 1), 20000, 'stance goto');
+      } catch (error) {
+        // no-path rejection (clean) or stall/cap (pathfinder already reloaded)
+        if (process.env.AFK_PFDBG) console.log('[PFDBG] stance goto attempt', attempt, '→', formatError(error));
       }
-    };
-
-    for (let step = 0; step < 16; step++) {
-      const here = botPosition(bot);
-      if (atStance(here) || !here) return;
-      const hx = Math.floor(here.x);
-      const hz = Math.floor(here.z);
-      const dx = stance.x - hx;
-      const dz = stance.z - hz;
-      // Close and exact: land directly on the stance cell instead of "within 1".
-      if (exact && Math.abs(dx) <= 2 && Math.abs(dz) <= 2) {
-        await hop(stance.x, stance.z, 0);
-        if (atStance(botPosition(bot))) return;
-      }
-      const stepX = hx + Math.sign(dx) * Math.min(2, Math.abs(dx));
-      const stepZ = hz + Math.sign(dz) * Math.min(2, Math.abs(dz));
-      // Move along the dominant axis first; keep the other coordinate fixed so each
-      // hop is a short, open, reliable move.
-      const primary = Math.abs(dx) >= Math.abs(dz) ? { x: stepX, z: hz } : { x: hx, z: stepZ };
-      await hop(primary.x, primary.z);
-      let now = botPosition(bot);
-      if (now && Math.floor(now.x) === hx && Math.floor(now.z) === hz) {
-        // Blocked on that axis — try the perpendicular one to go around.
-        const alt = Math.abs(dx) >= Math.abs(dz)
-          ? { x: hx, z: hz + (Math.sign(dz) || 1) }
-          : { x: hx + (Math.sign(dx) || 1), z: hz };
-        await hop(alt.x, alt.z);
-        now = botPosition(bot);
-        if (now && Math.floor(now.x) === hx && Math.floor(now.z) === hz) break; // fully stuck
+      const now = botPosition(bot);
+      if (atStance(now) || !now) return;
+      if (Math.abs(now.x - before.x) < 0.4 && Math.abs(now.z - before.z) < 0.4) {
+        await this.nudgeWalk(bot, stance);
       }
     }
-    // Straight-line hops dead-end against large obstacles (e.g. the far side of a
-    // walled basin). One full A* attempt can route AROUND them — worth the wait.
+  }
+
+  /**
+   * Pathfinder-free escape hatch: walk+jump blind for a moment so the next goto plans
+   * from new ground. Aims at the most target-ward OPEN cardinal, not the target itself —
+   * stalls happen in pockets where the target bearing is exactly the blocked direction
+   * (pressing into the wall would move the bot nowhere, again).
+   */
+  private async nudgeWalk(bot: BotLike, toward: PositionSnapshot): Promise<void> {
+    if (typeof bot.setControlState !== 'function') return;
     const here = botPosition(bot);
-    if (!atStance(here)) {
-      try {
-        await withTimeout(
-          Promise.resolve(bot.pathfinder?.goto?.(new goals.GoalNear(stance.x, stance.y, stance.z, exact ? 0 : 1))),
-          20000,
-          'stance detour'
-        );
-      } catch {
-        // the caller's within-reach retry decides what happens next
+    if (!here) return;
+    const feet = { x: Math.floor(here.x), y: Math.floor(here.y), z: Math.floor(here.z) };
+    const solid = (x: number, y: number, z: number): boolean => {
+      const block = typeof bot.blockAt === 'function' ? bot.blockAt(toVec3({ x, y, z })) : null;
+      return block != null && !isAirBlock(block);
+    };
+    // A cardinal is open when the bot can walk (or jump a 1-high lip) into the next cell.
+    const isOpen = (dx: number, dz: number): boolean => {
+      const x = feet.x + dx;
+      const z = feet.z + dz;
+      if (solid(x, feet.y + 1, z)) return false; // head-height wall — can't even jump in
+      if (solid(x, feet.y, z) && solid(x, feet.y + 2, z)) return false; // 1-high lip but no jump headroom
+      return true;
+    };
+    const dirs = [
+      { x: 1, z: 0 },
+      { x: -1, z: 0 },
+      { x: 0, z: 1 },
+      { x: 0, z: -1 }
+    ];
+    const tx = toward.x + 0.5 - here.x;
+    const tz = toward.z + 0.5 - here.z;
+    const score = (d: { x: number; z: number }) => d.x * tx + d.z * tz;
+    // Geometry alone misjudges partial blocks (a hopper "looks" like a jumpable lip but
+    // physics won't mount it from a pocket), so verify each direction BEHAVIOURALLY:
+    // walk it briefly and move on to the next direction if the feet didn't actually move.
+    const ranked = [...dirs].sort((a, b) => score(b) - score(a)).sort((a, b) => Number(isOpen(b.x, b.z)) - Number(isOpen(a.x, a.z)));
+    for (const dir of ranked) {
+      const start = botPosition(bot);
+      if (!start) return;
+      if (process.env.AFK_PFDBG) {
+        console.log('[PFDBG] nudge:', `from ${feet.x},${feet.y},${feet.z}`, `dir ${dir.x},${dir.z}`, `toward ${Math.floor(toward.x)},${Math.floor(toward.z)}`);
       }
+      try {
+        await Promise.resolve(bot.lookAt?.(new Vec3(start.x + dir.x * 4, start.y + 1.62, start.z + dir.z * 4), true));
+        // Jump only when there is actually a lip to mount: jump-landing on farmland
+        // TRAMPLES it back to dirt (observed live: a crop build's nudges wiped out
+        // half the tilled field), and flat ground never needs the hop.
+        const lip = solid(feet.x + dir.x, feet.y, feet.z + dir.z);
+        if (lip) bot.setControlState('jump', true);
+        bot.setControlState('forward', true);
+        await new Promise((resolve) => setTimeout(resolve, 900));
+      } catch {
+        // best-effort
+      } finally {
+        bot.setControlState?.('forward', false);
+        bot.setControlState?.('jump', false);
+      }
+      const now = botPosition(bot);
+      if (now && start && (Math.abs(now.x - start.x) > 0.4 || Math.abs(now.z - start.z) > 0.4)) return;
     }
   }
 
@@ -2062,7 +2482,7 @@ export class BotManager extends EventEmitter {
     for (const off of offsets) {
       try {
         const goal = new pathfinderGoals.GoalNear(position.x + off.x, feet.y, position.z + off.z, 0);
-        await withTimeout(Promise.resolve(bot.pathfinder.goto(goal)), PATHFIND_TIMEOUT_MS, 'step aside');
+        await this.gotoWithTimeout(bot, goal, PATHFIND_TIMEOUT_MS, 'step aside');
       } catch {
         continue;
       }
@@ -2195,6 +2615,7 @@ export class BotManager extends EventEmitter {
       { off: { x: 0, y: 0, z: 1 }, face: new Vec3(0, 0, -1) },
       { off: { x: 0, y: 1, z: 0 }, face: new Vec3(0, -1, 0) }
     ];
+    const jumpCandidates: Array<{ off: PositionSnapshot; face: Vec3 }> = [];
     for (const candidate of faces) {
       const reference = bot.blockAt(toVec3(addPosition(position, candidate.off)));
       if (!reference || isAirBlock(reference)) continue;
@@ -2203,6 +2624,12 @@ export class BotManager extends EventEmitter {
       // placement is silently dropped (blockUpdate never fires). Skip faces the
       // bot cannot legitimately click from where it stands.
       if (!this.faceClickable(bot, addPosition(position, candidate.off), candidate.face)) {
+        // A top face that is only just above eye height becomes clickable at jump
+        // apex (~+1.25). This is how any wall row above the second course is placed
+        // from the ground — exactly like a vanilla player jump-placing.
+        if (candidate.face.y === 1 && this.faceClickable(bot, addPosition(position, candidate.off), candidate.face, 1.1)) {
+          jumpCandidates.push(candidate);
+        }
         if (process.env.AFK_PFDBG) console.log('[PFDBG] skip face', JSON.stringify(candidate.off), 'not clickable');
         continue;
       }
@@ -2225,18 +2652,73 @@ export class BotManager extends EventEmitter {
         // try the next face
       }
     }
+    for (const candidate of jumpCandidates) {
+      if (await this.tryJumpPlace(bot, itemName, position, candidate)) return true;
+    }
     return false;
   }
 
+  /** Jump and click a top face that sits between standing eye height and jump-apex eye
+   *  height. Waits for the feet to actually rise before clicking so the server sees the
+   *  elevated eye position. */
+  private async tryJumpPlace(
+    bot: BotLike,
+    itemName: string,
+    position: PositionSnapshot,
+    candidate: { off: PositionSnapshot; face: Vec3 }
+  ): Promise<boolean> {
+    if (typeof bot.setControlState !== 'function' || typeof bot.blockAt !== 'function' || typeof bot.placeBlock !== 'function') {
+      return false;
+    }
+    const reference = bot.blockAt(toVec3(addPosition(position, candidate.off)));
+    if (!reference || isAirBlock(reference)) return false;
+    // Jump-landing on farmland tramples it back to dirt and pops the crop — never
+    // worth it (crop placements are all below eye height anyway).
+    const here = botPosition(bot);
+    if (here) {
+      const below = bot.blockAt(toVec3({ x: Math.floor(here.x), y: Math.floor(here.y) - 1, z: Math.floor(here.z) }));
+      if (below?.name === 'farmland') return false;
+    }
+    const item = findInventoryItem(bot, itemName);
+    if (!item || typeof bot.equip !== 'function') return false;
+    await Promise.resolve(bot.equip(item, 'hand'));
+    const startY = botPosition(bot)?.y ?? 0;
+    if (process.env.AFK_PFDBG) console.log('[PFDBG] jump-place attempt for', formatPosition(position));
+    try {
+      bot.setControlState('jump', true);
+      // Wait until near apex (feet risen ≥ 0.9) instead of a fixed delay — physics
+      // tick timing varies. Bail out if the jump never happens (blocked overhead).
+      let risen = false;
+      for (let i = 0; i < 12; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 45));
+        const y = botPosition(bot)?.y ?? startY;
+        if (y - startY >= 0.9) {
+          risen = true;
+          break;
+        }
+      }
+      if (!risen) return false;
+      await withTimeout(Promise.resolve(bot.placeBlock(reference, candidate.face)), PLACE_BLOCK_TIMEOUT_MS, `jump-place ${itemName}`);
+      return true;
+    } catch (error) {
+      if (process.env.AFK_PFDBG) console.log('[PFDBG] jump-place ->', formatError(error));
+      const now = bot.blockAt(toVec3(position));
+      return now != null && !isAirBlock(now);
+    } finally {
+      bot.setControlState?.('jump', false);
+    }
+  }
+
   /** True when the bot's eye is on the outward side of the face it wants to click,
-   *  with enough margin that the server-side raytrace hits that face first. */
-  private faceClickable(bot: BotLike, refCell: PositionSnapshot, face: Vec3): boolean {
+   *  with enough margin that the server-side raytrace hits that face first.
+   *  `eyeLift` simulates extra eye height (e.g. +1.1 at jump apex). */
+  private faceClickable(bot: BotLike, refCell: PositionSnapshot, face: Vec3, eyeLift = 0): boolean {
     // Without the pathfinder the bot cannot reposition anyway (unit tests / bare
     // clients) — skip the geometry gate and let placeBlock decide.
     if (!pathfinderGoals || typeof bot.pathfinder?.goto !== 'function') return true;
     const here = botPosition(bot);
     if (!here) return true; // no position info — let placeBlock decide
-    const eye = { x: here.x, y: here.y + 1.62, z: here.z };
+    const eye = { x: here.x, y: here.y + 1.62 + eyeLift, z: here.z };
     const faceCenter = {
       x: refCell.x + 0.5 + face.x * 0.5,
       y: refCell.y + 0.5 + face.y * 0.5,
@@ -2664,6 +3146,15 @@ export class BotManager extends EventEmitter {
         );
         continue;
       }
+      // Pin the resumed plan to the ORIGINAL farm origin — the bot rejoins wherever it
+      // dropped, and rebuilding the plan from that drifted position would start a second,
+      // offset farm instead of repairing the existing one.
+      const anchor =
+        kind === 'cactusFarm' ? session.cactusFarmOrigin
+        : kind === 'cropFarm' ? session.cropFarmOrigin
+        : kind === 'area' ? session.areaAnchor
+        : null;
+      if (anchor) session.resumeAnchor.set(kind, anchor);
       this.pushEvent(session, operationEventType(kind), 'ok', `${OPERATION_LABELS[kind]} resumed`, 'Auto-resume after reconnect');
       void this.startOperation(session.profile.id, { kind, config: saved.config as never }).catch((error) => {
         this.blockOperation(session, kind, `Resume failed: ${formatError(error)}`);
@@ -2675,6 +3166,8 @@ export class BotManager extends EventEmitter {
     for (const kind of Object.keys(session.snapshot.operations) as OperationKind[]) {
       this.stopOperationTimer(session, kind);
       session.operationQueues.delete(kind);
+      session.operationRetry.delete(kind);
+      session.operationPass.delete(kind);
       if (session.snapshot.operations[kind].state === 'running') {
         this.updateOperation(session, kind, 'idle', 'Stopped');
       }
@@ -2695,6 +3188,8 @@ export class BotManager extends EventEmitter {
   ): void {
     this.stopOperationTimer(session, kind);
     session.operationQueues.delete(kind);
+    session.operationRetry.delete(kind);
+    session.operationPass.delete(kind);
     this.updateOperation(session, kind, state, detail, { total: session.snapshot.operations[kind].total });
     this.pushEvent(session, operationEventType(kind), state === 'error' ? 'danger' : 'warn', `${OPERATION_LABELS[kind]} blocked`, detail);
   }
@@ -2938,8 +3433,44 @@ async function defaultMineflayerFactory(options: MineflayerOptions): Promise<Bot
     throw new Error('mineflayer createBot() was not found');
   }
   const bot = createBot(options) as unknown as BotLike;
+  unifyActionSequences(bot);
   await loadPathfinderPlugin(bot);
   return bot;
+}
+
+/**
+ * Stamp every block-action packet with ONE monotonically increasing sequence id, exactly
+ * like the vanilla client. mineflayer keeps SEPARATE per-plugin counters (inventory.js for
+ * use_item, generic_place for placements) and sends block_dig with NO sequence at all — on
+ * Paper 1.21.11 a single bucket use then makes the server silently DISCARD every following
+ * dig (measured live: a bot "dug" a 789-block room that never existed server-side, then
+ * walked down the phantom staircase). One injected fresh sequence resynchronises the server
+ * and digs land again, so unify all three packets at the client-write boundary.
+ */
+function unifyActionSequences(bot: BotLike): void {
+  const holder = bot as unknown as {
+    _client?: { write?: (name: string, params: Record<string, unknown>) => unknown; __afkSeqUnified?: boolean };
+  };
+  const client = holder._client;
+  if (!client || typeof client.write !== 'function' || client.__afkSeqUnified) return;
+  client.__afkSeqUnified = true;
+  let sequence = 1;
+  const originalWrite = client.write.bind(client);
+  const supportsSequences = (): boolean => {
+    try {
+      const support = (bot as unknown as { supportFeature?: (name: string) => boolean }).supportFeature;
+      return typeof support === 'function' ? Boolean(support.call(bot, 'useItemWithOwnPacket')) : false;
+    } catch {
+      return false;
+    }
+  };
+  client.write = (name: string, params: Record<string, unknown>) => {
+    // Pre-1.19 protocols have no sequence field — adding one would break serialisation.
+    if (params && (name === 'block_dig' || name === 'block_place' || name === 'use_item') && supportsSequences()) {
+      params.sequence = sequence++;
+    }
+    return originalWrite(name, params);
+  };
 }
 
 async function loadPathfinderPlugin(bot: BotLike): Promise<void> {
@@ -2967,6 +3498,7 @@ async function loadPathfinderPlugin(bot: BotLike): Promise<void> {
     const plugin = pick('pathfinder');
     if (plugin && typeof bot.loadPlugin === 'function') {
       bot.loadPlugin(plugin);
+      pathfinderPluginRef = plugin;
     }
     const movements = pick('Movements');
     if (movements) pathfinderMovements = movements;
@@ -2988,6 +3520,10 @@ function configurePathfinderMovements(bot: BotLike): void {
     movements.canDig = false;
     movements.allow1by1towers = false;
     bot.pathfinder.setMovements(movements);
+    // Bound the A* COMPUTE phase so unreachable goals reject cleanly and fast on the
+    // pathfinder's own error path — our outer timeout must stay a rare last resort,
+    // because aborting a goto mid-execution wedges the instance (see gotoWithTimeout).
+    (bot.pathfinder as unknown as Record<string, unknown>).thinkTimeout = 3000;
   } catch {
     // ignore — walking just falls back to no-op
   }
@@ -3537,7 +4073,9 @@ function normalizeCactusFarm(config?: Partial<CactusFarmConfig>): CactusFarmConf
     wallBlock:
       config?.wallBlock === 'cobblestone' || config?.wallBlock === 'smooth_stone'
         ? config.wallBlock
-        : 'glass'
+        : 'glass',
+    columns: clamp(Number(config?.columns), 1, 4, DEFAULT_MODULES.cactusFarm.columns),
+    basinLayers: clamp(Number(config?.basinLayers), 1, 3, DEFAULT_MODULES.cactusFarm.basinLayers)
   };
 }
 
@@ -4056,7 +4594,99 @@ function cactusPlantingPlan(origin: PositionSnapshot, config: CactusFarmConfig):
  * side to leave through (east wall dy1+ goes up last, after the water is poured
  * from outside), and no stance cell is ever a future block position.
  */
+// Column pitch for side-by-side basins: the footprint spans x -1..8 and the east water/wall
+// stances need x 9..10 open. 12 would satisfy the stances, but it leaves only a 2-wide
+// corridor between a finished east wall and the next basin's rising west ring — exactly the
+// partial-block pocket geometry the pathfinder livelocks in (observed live). 14 keeps a
+// 4-wide corridor the bot navigates cleanly.
+const CACTUS_COLUMN_SPACING = 14;
+// Vertical pitch for dug-down levels: a 5-high room plus the natural 1-block slab that stays
+// in place as the ceiling (level above's floor foundation).
+const CACTUS_LAYER_DEPTH = 6;
+
+/**
+ * The full farm is a grid of identical basins: `columns` copies tiled east at surface level,
+ * and `basinLayers` levels stacked DOWNWARD — each sub-surface level is a room excavated in
+ * solid ground (its stance envelope), reached by a 1-wide access stair dug outside the room
+ * at x = -4. Downward is the only direction that scales reliably: digging is never rejected
+ * by Paper's placement raytrace, while building upward would require mid-air bridging that
+ * the server silently drops.
+ */
 function cactusBasinPlan(origin: PositionSnapshot, config: CactusFarmConfig): OperationWorkItem[] {
+  // Profiles saved before these fields existed reach this without normalization.
+  const levels = Math.max(1, Math.floor(config.basinLayers ?? 1));
+  const columns = Math.max(1, Math.floor(config.columns ?? 1));
+  const items: OperationWorkItem[] = [];
+  for (let level = 0; level < levels; level++) {
+    const yOff = -CACTUS_LAYER_DEPTH * level;
+    for (let column = 0; column < columns; column++) {
+      const xOff = column * CACTUS_COLUMN_SPACING;
+      if (level > 0) appendBasinRoomDig(items, origin, xOff, yOff, config);
+      appendCactusBasin(items, origin, xOff, yOff, config);
+    }
+  }
+  return items;
+}
+
+/**
+ * Excavate one sub-surface level for a basin: a straight 3-high access stair descending along
+ * the west side (x = -4, OUTSIDE the room so its supporting blocks are never dug away), then
+ * the room itself — the basin's full stance envelope (x -3..10, z ring±2, 5 high). Dig-on-air
+ * items skip instantly, so overlap with a neighbouring column's room or a stair from a
+ * previous level costs nothing.
+ */
+function appendBasinRoomDig(
+  items: OperationWorkItem[],
+  origin: PositionSnapshot,
+  xOff: number,
+  yOff: number,
+  config: CactusFarmConfig
+): void {
+  const ringZMin = -3;
+  const ringZMax = 4 * config.rowPairs - 1;
+  const zLo = ringZMin - 2;
+  const zHi = ringZMax + 2;
+  const dig = (x: number, y: number, z: number) => {
+    items.push({ action: 'dig', position: addPosition(origin, { x: x + xOff, y, z }), walk: true });
+  };
+
+  // Stair: one step per block of depth, 3-high clearance, feet landing exactly on the room
+  // floor slab. The run starts at the level above's feet height (yOff + depth).
+  const stairTop = yOff + CACTUS_LAYER_DEPTH;
+  for (let s = 1; s <= CACTUS_LAYER_DEPTH; s++) {
+    for (let k = 2; k >= 0; k--) dig(-4, stairTop - s + k, zLo + s);
+  }
+  // Doorway from the stair landing into the room's west corridor.
+  dig(-3, yOff + 1, zLo + CACTUS_LAYER_DEPTH);
+  dig(-3, yOff, zLo + CACTUS_LAYER_DEPTH);
+
+  // Room: dig in horizontal SLICES from the top down. The access stair passes through
+  // every slice, so the bot enters each one at exactly its own foot level and every dig
+  // is an adjacent frontier cell — per-column ordering left the edge/ceiling cells only
+  // reachable from far away, where the reach gate (rightly) refuses to dig.
+  for (let y = yOff + 4; y >= yOff; y--) {
+    const entryZ = Math.min(zHi, Math.max(zLo, zLo + (stairTop - y)));
+    const zOrder: number[] = [];
+    for (let z = zLo; z <= zHi; z++) zOrder.push(z);
+    zOrder.sort((a, b) => Math.abs(a - entryZ) - Math.abs(b - entryZ));
+    for (const [row, z] of zOrder.entries()) {
+      // serpentine within the slice keeps consecutive targets adjacent
+      if (row % 2 === 0) {
+        for (let x = -3; x <= 10; x++) dig(x, y, z);
+      } else {
+        for (let x = 10; x >= -3; x--) dig(x, y, z);
+      }
+    }
+  }
+}
+
+function appendCactusBasin(
+  items: OperationWorkItem[],
+  origin: PositionSnapshot,
+  xOff: number,
+  yOff: number,
+  config: CactusFarmConfig
+): void {
   const pairs = config.rowPairs;
   const wall = config.wallBlock;
   const withCollection = config.buildCollection;
@@ -4073,10 +4703,9 @@ function cactusBasinPlan(origin: PositionSnapshot, config: CactusFarmConfig): Op
     if (p === 0) waterLanes.push(-2);
     waterLanes.push(4 * p + 2);
   }
-  const isCactusRow = (z: number) => cactusRows.includes(z);
 
-  const items: OperationWorkItem[] = [];
-  const at = (offset: PositionSnapshot) => addPosition(origin, offset);
+  const at = (offset: PositionSnapshot) =>
+    addPosition(origin, { x: offset.x + xOff, y: offset.y + yOff, z: offset.z });
   const place = (
     offset: PositionSnapshot,
     itemName: string,
@@ -4087,13 +4716,16 @@ function cactusBasinPlan(origin: PositionSnapshot, config: CactusFarmConfig): Op
 
   // 1. Chest + hopper chain. Hoppers must point INTO their downstream neighbour,
   //    so each is clicked onto the previous block's north face with sneak held.
+  //    Stance one cell PAST the clicked face plane (z+1): standing in the target's
+  //    own z-row can park the eye millimetres from the plane, where the server
+  //    rejects the click (along ≈ 0) — one row further is always clearly beyond.
   if (withCollection) {
     place({ x: 0, y: 0, z: ringZMin }, 'chest', { stance: at({ x: 0, y: 0, z: ringZMin - 1 }) });
     for (let z = zMin; z <= zMax; z++) {
       place({ x: 0, y: 0, z }, 'hopper', {
         against: at({ x: 0, y: 0, z: z - 1 }),
         sneak: true,
-        stance: at({ x: -2, y: 0, z })
+        stance: at({ x: -2, y: 0, z: z + 1 })
       });
     }
   }
@@ -4109,40 +4741,52 @@ function cactusBasinPlan(origin: PositionSnapshot, config: CactusFarmConfig): Op
       place({ x, y: 0, z }, wall, { stance });
     }
   }
-  // Ring base + walls are grouped SIDE BY SIDE (finish the whole west column,
-  //    then the whole east base, then south, then north): interleaving sides
-  //    makes the bot hike around the full perimeter for every single block.
-  for (let z = ringZMin; z <= ringZMax; z++) {
+  // Ring base + walls are grouped SIDE BY SIDE (finish one whole side before the
+  //    next): interleaving sides makes the bot hike around the full perimeter for
+  //    every single block. Side order is WEST → SOUTH → EAST → NORTH so each
+  //    transition is a short hop around an open corner — once all four base rows
+  //    are down the basin is an enclosed 1-high tub, and A* reliably fails to
+  //    route across it (observed live: the bot wedged on the south side with the
+  //    north row unreachable until it was teleported).
+  for (let z = ringZMax; z >= ringZMin; z--) {
     place({ x: -1, y: 0, z }, wall, { stance: at({ x: -2, y: 0, z }) });
-  }
-  for (let z = ringZMin; z <= ringZMax; z++) {
-    place({ x: 8, y: 0, z }, wall, { stance: at({ x: 9, y: 0, z }) });
   }
   for (let x = 0; x <= 7; x++) {
     if (withCollection && x === 0) continue; // the chest lives at (0, ringZMin)
     place({ x, y: 0, z: ringZMin }, wall, { stance: at({ x, y: 0, z: ringZMin - 1 }) });
   }
-  for (let x = 0; x <= 7; x++) {
+  for (let z = ringZMin; z <= ringZMax; z++) {
+    place({ x: 8, y: 0, z }, wall, { stance: at({ x: 9, y: 0, z }) });
+  }
+  for (let x = 7; x >= 0; x--) {
     place({ x, y: 0, z: ringZMax }, wall, { stance: at({ x, y: 0, z: ringZMax + 1 }) });
   }
 
-  // 3. South/west/north ring walls, per side bottom-up, always placed from
-  //    OUTSIDE the basin. Stances sit TWO cells out: walkToStance tolerates ±1,
-  //    so a one-cell stance lets the bot climb onto the ring base ledge, where
-  //    the next wall block is its own head cell and every place fails. Sides are
-  //    ordered around the perimeter (south → west → north) so the bot never has
-  //    to cross the walled basin to reach the next group.
-  for (let y = 1; y <= 4; y++) {
+  // 3. South/west/north ring wall courses y1 and y2, per side bottom-up, always
+  //    placed from OUTSIDE the basin. Stances sit TWO cells out: walkToStance
+  //    tolerates ±1, so a one-cell stance lets the bot climb onto the ring base
+  //    ledge, where the next wall block is its own head cell and every place
+  //    fails. Sides are ordered around the perimeter (south → west → north) so
+  //    the bot never has to cross the walled basin to reach the next group.
+  //    Placement physics per course: y1 clicks the base's top face normally;
+  //    y2's top-face plane (feet+2) is above standing eye height, so the engine
+  //    jump-places it; y3 CANNOT be placed from the ground at all (even a jump
+  //    apex eye stays below the plane) — course y3 is added later from INSIDE,
+  //    standing on the strip rows (feet at +2 ⇒ eye above the +3 plane).
+  for (let y = 1; y <= 2; y++) {
     for (let x = 7; x >= 0; x--) {
-      place({ x, y, z: ringZMin }, wall, { stance: at({ x, y: 0, z: ringZMin - 2 }) });
+      // The chest sits directly below (0, 1, ringZMin): an opaque wall block there would
+      // lock the lid shut, so that one cell is always glass regardless of wallBlock.
+      const itemName = withCollection && x === 0 && y === 1 ? 'glass' : wall;
+      place({ x, y, z: ringZMin }, itemName, { stance: at({ x, y: 0, z: ringZMin - 2 }) });
     }
   }
-  for (let y = 1; y <= 4; y++) {
+  for (let y = 1; y <= 2; y++) {
     for (let z = ringZMin; z <= ringZMax; z++) {
       place({ x: -1, y, z }, wall, { stance: at({ x: -3, y: 0, z }) });
     }
   }
-  for (let y = 1; y <= 4; y++) {
+  for (let y = 1; y <= 2; y++) {
     for (let x = 0; x <= 7; x++) {
       place({ x, y, z: ringZMax }, wall, { stance: at({ x, y: 0, z: ringZMax + 2 }) });
     }
@@ -4161,11 +4805,36 @@ function cactusBasinPlan(origin: PositionSnapshot, config: CactusFarmConfig): Op
     }
   }
 
-  // 5. Fence lattice at dy3: anchored on the west ring, chained eastward. One
-  //    line serves the cactus rows on both of its sides. Stance one cell EAST of
-  //    the target: clicking the west neighbour's east face needs the eye clearly
-  //    beyond that face plane, and the bot drifts onto it when it stands in the
-  //    target's own column.
+  // 4b. Third wall course (y3) for the south, west and north sides — placed from
+  //     INSIDE, standing on the strip rows (feet +2 ⇒ eye 3.62, above the y3
+  //     top-face plane at +3, and within reach of every ring column). This runs
+  //     BEFORE the cacti are planted so the bot never brushes a cactus while
+  //     walking the strips. The east side deliberately stays two courses tall:
+  //     water is poured through the open east side and by then the interior is
+  //     unreachable; drop physics still can't clear a +2 rim at that distance.
+  const stripStanceFor = (x: number, z: number): PositionSnapshot => {
+    const sx = Math.max(1, Math.min(7, x));
+    let best = cactusRows[0];
+    for (const row of cactusRows) {
+      if (Math.abs(row - z) < Math.abs(best - z)) best = row;
+    }
+    return at({ x: sx, y: 2, z: best });
+  };
+  for (let x = 7; x >= 0; x--) {
+    place({ x, y: 3, z: ringZMin }, wall, { stance: stripStanceFor(x, ringZMin) });
+  }
+  for (let z = ringZMin; z <= ringZMax; z++) {
+    place({ x: -1, y: 3, z }, wall, { stance: stripStanceFor(0, z) });
+  }
+  for (let x = 0; x <= 7; x++) {
+    place({ x, y: 3, z: ringZMax }, wall, { stance: stripStanceFor(x, ringZMax) });
+  }
+
+  // 5. Fence lattice at dy3: anchored on the west ring (whose y3 course now
+  //    exists), chained eastward. One line serves the cactus rows on both of its
+  //    sides. Stance one cell EAST of the target: clicking the west neighbour's
+  //    east face needs the eye clearly beyond that face plane, and the bot
+  //    drifts onto it when it stands in the target's own column.
   // The line stops at x=6: the easternmost cactus column is x=6, so an x=7
   // fence would be pure chain filler — and the only stance for it is the east
   // wall cell, which the bot cannot reliably occupy.
@@ -4190,7 +4859,10 @@ function cactusBasinPlan(origin: PositionSnapshot, config: CactusFarmConfig): Op
 
   // 7. Water, poured from OUTSIDE the east wall gap (stance on the platform at
   //    x=9). Sources go on every open lane; cactus-row strips stay dry on top.
+  //    The barrier first: once the water is in and the east wall goes up, interior
+  //    cells become unreachable, so every failure so far must be repaired NOW.
   if (withCollection) {
+    items.push({ action: 'barrier', position: at({ x: 8, y: 0, z: 0 }) });
     for (const z of [...waterLanes, ...fenceLanes].sort((a, b) => a - b)) {
       items.push({
         action: 'water',
@@ -4203,13 +4875,13 @@ function cactusBasinPlan(origin: PositionSnapshot, config: CactusFarmConfig): Op
 
   // 8. Close the east wall (corner columns included) from outside, sealing the
   //    basin. Stance two cells out for the same ledge reason as the other walls.
+  //    Two courses only: y1 places normally, y2 jump-places; y3 would need an
+  //    inside stance that no longer exists once the water is in.
   for (let z = ringZMin; z <= ringZMax; z++) {
-    for (let y = 1; y <= 4; y++) {
+    for (let y = 1; y <= 2; y++) {
       place({ x: 8, y, z }, wall, { stance: at({ x: 10, y: 0, z }) });
     }
   }
-
-  return items;
 }
 
 function cactusMaterialNeeds(plan: OperationWorkItem[]): Record<string, number> {
@@ -4476,7 +5148,13 @@ export function cropBuildPlan(origin: PositionSnapshot, config: CropFarmConfig):
         prepare.push({ action: 'dig', position: addPosition(origin, { x: dx, y: 0, z: dz }), walk: true });
         prepare.push({ action: 'till', position: surface, walk: true });
       }
-      plant.push({ action: 'place', position: addPosition(origin, { x: dx, y: 0, z: dz }), itemName: seed, walk: true });
+      plant.push({
+        action: 'place',
+        position: addPosition(origin, { x: dx, y: 0, z: dz }),
+        itemName: seed,
+        walk: true,
+        tillUnder: config.autoTill
+      });
     }
   }
 

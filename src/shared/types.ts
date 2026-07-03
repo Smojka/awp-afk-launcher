@@ -96,6 +96,13 @@ export interface CactusFarmConfig {
   rowPairs: number;
   /** Block used for the basin floor, strips and containment ring. */
   wallBlock: CactusWallBlock;
+  /** Side-by-side basin copies tiled east along +X (each has its own chest + hopper line). */
+  columns: number;
+  /** Stacked basin levels dug DOWNWARD (level 0 is at the surface; each extra level is a
+   *  5-high room excavated below the previous one, reached by a straight access stair).
+   *  Upward stacking is deliberately unsupported: Paper's placement validation rejects the
+   *  mid-air bridging it would need. */
+  basinLayers: number;
 }
 
 export type CropWaterMode = 'auto' | 'existing';

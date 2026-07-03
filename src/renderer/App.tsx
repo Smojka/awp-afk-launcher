@@ -110,7 +110,7 @@ const DEFAULT_STORAGE_UI: StorageConfig = {
 };
 
 const DEFAULT_MODULES_UI: BotModulesConfig = {
-  cactusFarm: { enabled: false, layers: 1, radius: 2, placementDelayMs: 550, build: true, breakBlock: 'oak_fence', buildCollection: true, rowPairs: 1, wallBlock: 'glass' },
+  cactusFarm: { enabled: false, layers: 1, radius: 2, placementDelayMs: 550, build: true, breakBlock: 'oak_fence', buildCollection: true, rowPairs: 1, wallBlock: 'glass', columns: 1, basinLayers: 1 },
   cropFarm: { enabled: false, crop: 'wheat', radius: 4, harvestDelayMs: 750, replant: true, collectDrops: true, build: true, autoTill: true, waterMode: 'auto' },
   area: {
     enabled: false,
@@ -1927,6 +1927,28 @@ function OperationsPanel({
                   value={modules.cactusFarm.rowPairs}
                   display={`${modules.cactusFarm.rowPairs} (${modules.cactusFarm.rowPairs * 6} kaktüs)`}
                   onChange={(value) => updateCactus({ rowPairs: value })}
+                />
+              )}
+              {modules.cactusFarm.build && (
+                <Slider
+                  label="Sütun"
+                  help="Farmı doğuya doğru yan yana kopyalar; her sütunun kendi sandığı ve huni hattı olur."
+                  min={1}
+                  max={4}
+                  value={modules.cactusFarm.columns}
+                  display={`${modules.cactusFarm.columns} (toplam ${modules.cactusFarm.columns * modules.cactusFarm.rowPairs * 6 * modules.cactusFarm.basinLayers} kaktüs)`}
+                  onChange={(value) => updateCactus({ columns: value })}
+                />
+              )}
+              {modules.cactusFarm.build && (
+                <Slider
+                  label="Katman (yeraltı, deneysel)"
+                  help="Ek katmanlar zemine AŞAĞI doğru kazılır: her katman 5 blokluk bir oda + merdiven kazar, kendi havuzunu kurar. Zeminin altında en az katman×6 blok dolu alan olmalı. Büyük kazı uzun sürer; bot koparsa otomatik devam eder, kalan hücreleri ikinci bir Start onarır. (Yukarı istifleme Paper'ın yerleştirme doğrulaması yüzünden desteklenmez.)"
+                  min={1}
+                  max={3}
+                  value={modules.cactusFarm.basinLayers}
+                  display={`${modules.cactusFarm.basinLayers}`}
+                  onChange={(value) => updateCactus({ basinLayers: value })}
                 />
               )}
               {modules.cactusFarm.build && (
