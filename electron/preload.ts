@@ -7,6 +7,7 @@ import type {
   LauncherState,
   OperationKind,
   OperationStartRequest,
+  PositionSnapshot,
   SaveProfileInput,
   UpdateCheckResult,
   UpdateDownloadedInfo,
@@ -35,6 +36,8 @@ const api: LauncherApi = {
     ipcRenderer.invoke('bot:inventoryAction', profileId, request) as Promise<LauncherState>,
   completeChat: (profileId: string, partial: string) =>
     ipcRenderer.invoke('bot:completeChat', profileId, partial) as Promise<string[]>,
+  capturePosition: (profileId: string) =>
+    ipcRenderer.invoke('bot:capturePosition', profileId) as Promise<PositionSnapshot | null>,
   configureDiscord: (profileId: string, input: DiscordRuntimeInput) =>
     ipcRenderer.invoke('bot:configureDiscord', profileId, input) as Promise<LauncherState>,
   updateSettings: (patch: Partial<AppSettings>) =>

@@ -1,5 +1,20 @@
-import type { AccountProfile } from '../../shared/types.js';
+import type { AccountProfile, StorageConfig } from '../../shared/types.js';
 import { DEFAULT_HEARTBEAT_MESSAGES } from '../../shared/heartbeatMessages.js';
+
+/**
+ * Default chest storage for a new profile — disabled, with zeroed coords. The feature is inert
+ * until the user enables it and captures chest positions, so existing farms see no change.
+ */
+export function defaultStorage(): StorageConfig {
+  return {
+    enabled: false,
+    withdrawFrom: { x: 0, y: 0, z: 0 },
+    depositTo: { x: 0, y: 0, z: 0 },
+    depositAtPercentFull: 0.8,
+    keepSeedStacks: 1,
+    retryAttempts: 3
+  };
+}
 
 const defaultRoutine = {
   randomLook: true,

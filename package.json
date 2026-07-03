@@ -1,6 +1,6 @@
 {
   "name": "afk-launcher",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "ChunkKeeper desktop launcher for authorized Minecraft Java AFK sessions.",
   "author": "smojka",
   "type": "module",
@@ -101,7 +101,7 @@
       "!node_modules/rxjs/dist/{bundles,esm,esm5}/**/*",
       "!node_modules/rxjs/src/**/*",
       "!node_modules/minecraft-data/minecraft-data/data/bedrock/!(common)/**/*",
-      "!node_modules/minecraft-data/minecraft-data/data/pc/!(common|latest|1.16|1.16.1|1.17|1.19|1.19.2|1.19.4|1.20|1.20.1|1.20.2|1.20.3|1.20.4|1.20.5|1.20.6|1.21.1)/**/*"
+      "!node_modules/minecraft-data/minecraft-data/data/pc/!(common|latest|1.16|1.16.1|1.17|1.19|1.19.2|1.19.4|1.20|1.20.1|1.20.2|1.20.3|1.20.4|1.20.5|1.20.6|1.21|1.21.1|1.21.3|1.21.4|1.21.5|1.21.6|1.21.8|1.21.9|1.21.11)/**/*"
     ],
     "asar": true,
     "mac": {

@@ -156,6 +156,7 @@ function createTestApi(): LauncherApi {
       if (session) session.tabCompletions = completions;
       return completions;
     },
+    capturePosition: async () => null,
     configureDiscord: async (profileId, input) => {
       const session = state.sessions[profileId];
       if (session) {
@@ -420,6 +421,25 @@ describe('ChunkKeeper UI', () => {
     const fresh = rows[rows.length - 1];
     await user.type(fresh, '/spawn');
     expect(fresh).toHaveValue('/spawn');
+  });
+
+  it('renders the chest storage card and captures an output-chest position from the bot', async () => {
+    const user = userEvent.setup();
+    const api = createTestApi();
+    const capture = vi.spyOn(api, 'capturePosition').mockResolvedValue({ x: 10, y: 64, z: -5 });
+    render(<App api={api} />);
+
+    await screen.findByRole('heading', { name: 'ChunkKeeper' });
+    await user.click(screen.getByRole('tab', { name: /operations/i }));
+
+    expect(screen.getByText('Chest storage')).toBeInTheDocument();
+    // Supply + output roles each get their own capture button.
+    const captureButtons = screen.getAllByRole('button', { name: /sandığı yakala/i });
+    expect(captureButtons.length).toBe(2);
+
+    await user.click(captureButtons[1]); // output chest
+    expect(capture).toHaveBeenCalledWith('session-01');
+    expect(await screen.findByLabelText('Çıktı sandığı Z')).toHaveValue('-5');
   });
 
   it('opens a searchable quick-command menu from the command bar and sends the picked command', async () => {

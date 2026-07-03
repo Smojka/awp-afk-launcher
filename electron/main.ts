@@ -228,6 +228,9 @@ function registerIpc(): void {
   ipcMain.handle('bot:completeChat', async (_event, profileId: string, partial: string) =>
     getManager().completeChat(profileId, partial)
   );
+  ipcMain.handle('bot:capturePosition', async (_event, profileId: string) =>
+    getManager().capturePosition(profileId)
+  );
   ipcMain.handle('bot:configureDiscord', async (_event, profileId: string, input: DiscordRuntimeInput) =>
     getManager().configureDiscord(profileId, input)
   );

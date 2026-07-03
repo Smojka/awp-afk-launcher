@@ -79,17 +79,23 @@ export type CropType = 'wheat' | 'carrot' | 'potato' | 'beetroot' | 'nether_wart
 
 export type CactusBreakBlock = 'oak_fence' | 'glass_pane';
 
+export type CactusWallBlock = 'glass' | 'cobblestone' | 'smooth_stone';
+
 export interface CactusFarmConfig {
   enabled: boolean;
   layers: number;
   radius: number;
   placementDelayMs: number;
-  /** Build a real auto-harvesting farm (break-trigger blocks + collection) instead of bare cactus columns. */
+  /** Build the twin-row basin farm (water sheet + hopper line) instead of bare cactus columns. */
   build: boolean;
-  /** Thin block placed at the cactus grow cell so growth snaps off and drops. */
+  /** Thin block on the shared break lattice so growth snaps off and drops. */
   breakBlock: CactusBreakBlock;
-  /** Also place a hopper line under the drop cells to collect the harvest. */
+  /** Also build the collection system: hopper line, chest and the water sheet. */
   buildCollection: boolean;
+  /** Number of twin cactus rows (each pair adds 6 plants, tiled north along +Z). */
+  rowPairs: number;
+  /** Block used for the basin floor, strips and containment ring. */
+  wallBlock: CactusWallBlock;
 }
 
 export type CropWaterMode = 'auto' | 'existing';
@@ -196,6 +202,26 @@ export interface BotModulesConfig {
   autoResponse: AutoResponseConfig;
 }
 
+/**
+ * Profile-level chest storage, shared by all farm operations. Two roles on one config:
+ * `withdrawFrom` (supply — seeds/buckets/fill blocks) and `depositTo` (output — harvest).
+ * Same coords in both = a single chest. Inert until `enabled` is turned on and coords are set.
+ */
+export interface StorageConfig {
+  /** Master switch. When off, every farm behaves exactly as before (no deposit/restock trips). */
+  enabled: boolean;
+  /** Supply chest — seeds / buckets / fill blocks are withdrawn from here. Absolute world coords. */
+  withdrawFrom: PositionSnapshot;
+  /** Output chest — harvest is deposited here. Absolute world coords. If equal to withdrawFrom, it's one chest. */
+  depositTo: PositionSnapshot;
+  /** Deposit trip fires when the main inventory is >= this fraction full (0.5–0.95). */
+  depositAtPercentFull: number;
+  /** How many 64-stacks of the active replant seed to keep in inventory when depositing (crop farm). */
+  keepSeedStacks: number;
+  /** Retry count for a failed deposit/restock trip before the operation safe-pauses. */
+  retryAttempts: number;
+}
+
 export interface AccountProfile {
   id: string;
   label: string;
@@ -210,6 +236,8 @@ export interface AccountProfile {
   reconnect: ReconnectPolicy;
   proxy?: ProxyConfig;
   modules?: BotModulesConfig;
+  /** Shared chest storage for deposit/restock, referenced by all farm operations. */
+  storage?: StorageConfig;
 }
 
 export interface PositionSnapshot {
@@ -445,6 +473,7 @@ export interface LauncherApi {
   runQuickScript: (profileId: string, command: string) => Promise<LauncherState>;
   inventoryAction: (profileId: string, request: InventoryActionRequest) => Promise<LauncherState>;
   completeChat: (profileId: string, partial: string) => Promise<string[]>;
+  capturePosition: (profileId: string) => Promise<PositionSnapshot | null>;
   configureDiscord: (profileId: string, input: DiscordRuntimeInput) => Promise<LauncherState>;
   updateSettings: (patch: Partial<AppSettings>) => Promise<LauncherState>;
   openUserData: () => Promise<void>;

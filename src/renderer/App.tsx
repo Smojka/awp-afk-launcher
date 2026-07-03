@@ -61,6 +61,7 @@ import type {
   ProxyConfig,
   SaveProfileInput,
   ScriptStep,
+  StorageConfig,
   UpdateCheckResult,
   UpdateDownloadedInfo,
   UpdatePhase,
@@ -99,8 +100,17 @@ const OPERATION_TITLES: Record<OperationKind, string> = {
   discord: 'Discord'
 };
 
+const DEFAULT_STORAGE_UI: StorageConfig = {
+  enabled: false,
+  withdrawFrom: { x: 0, y: 0, z: 0 },
+  depositTo: { x: 0, y: 0, z: 0 },
+  depositAtPercentFull: 0.8,
+  keepSeedStacks: 1,
+  retryAttempts: 3
+};
+
 const DEFAULT_MODULES_UI: BotModulesConfig = {
-  cactusFarm: { enabled: false, layers: 1, radius: 2, placementDelayMs: 550, build: true, breakBlock: 'oak_fence', buildCollection: true },
+  cactusFarm: { enabled: false, layers: 1, radius: 2, placementDelayMs: 550, build: true, breakBlock: 'oak_fence', buildCollection: true, rowPairs: 1, wallBlock: 'glass' },
   cropFarm: { enabled: false, crop: 'wheat', radius: 4, harvestDelayMs: 750, replant: true, collectDrops: true, build: true, autoTill: true, waterMode: 'auto' },
   area: {
     enabled: false,
@@ -439,6 +449,11 @@ export function App({ api }: { api?: LauncherApi } = {}) {
     await run(() => apiClient!.stopOperation(draft.id, kind));
   }
 
+  async function captureChestPosition(profileId: string): Promise<PositionSnapshot | null> {
+    if (!apiClient) return null;
+    return apiClient.capturePosition(profileId);
+  }
+
   async function runQuickScript(command: string) {
     if (!draft?.id) return;
     await run(() => apiClient!.runQuickScript(draft.id, command));
@@ -740,6 +755,7 @@ export function App({ api }: { api?: LauncherApi } = {}) {
               onStart={startOperation}
               onStop={stopOperation}
               onApplyDiscord={applyDiscordRuntime}
+              onCaptureChest={captureChestPosition}
             />
           </section>
 
@@ -1717,7 +1733,8 @@ function OperationsPanel({
   onSave,
   onStart,
   onStop,
-  onApplyDiscord
+  onApplyDiscord,
+  onCaptureChest
 }: {
   draft: DraftProfile;
   session: BotSessionSnapshot | null;
@@ -1727,8 +1744,11 @@ function OperationsPanel({
   onStart: (kind: OperationKind, config?: BotModulesConfig[OperationKind]) => void | Promise<void>;
   onStop: (kind: OperationKind) => void | Promise<void>;
   onApplyDiscord: (input: DiscordRuntimeInput) => void | Promise<void>;
+  onCaptureChest: (profileId: string) => Promise<PositionSnapshot | null>;
 }) {
   const modules = profileModules(draft);
+  const storage = profileStorage(draft);
+  const updateStorage = (patch: Partial<StorageConfig>) => onChange({ ...draft, storage: { ...storage, ...patch } });
   const [runtimeDiscord, setRuntimeDiscord] = useState<DiscordRuntimeInput>(discordDraft);
   // The panel is not remounted when the active account changes, so re-seed the
   // write-only runtime fields from the (per-account) parent draft on every switch.
@@ -1771,8 +1791,11 @@ function OperationsPanel({
         <div className="operation-strip">
           {OPERATION_KINDS.map((kind) => {
             const operation = session?.operations?.[kind];
-            const progress =
-              operation && operation.total ? `${operation.completed}/${operation.total}` : null;
+            const total = operation?.total ?? null;
+            const hasBar = total != null && total > 0;
+            const progress = hasBar ? `${operation!.completed}/${total}` : null;
+            const pct = hasBar ? Math.max(0, Math.min(1, operation!.completed / total)) : 0;
+            const isBlocked = operation?.state === 'blocked' || operation?.state === 'error';
             return (
               <div className="operation-chip" key={kind} title={operation?.detail ?? undefined}>
                 <span>{OPERATION_TITLES[kind]}</span>
@@ -1780,12 +1803,79 @@ function OperationsPanel({
                   {operation?.state ?? 'idle'}
                   {progress ? ` ${progress}` : ''}
                 </strong>
+                {hasBar ? (
+                  <span className="bar">
+                    <span className="bar__fill bar__fill--ok" style={{ transform: `scaleX(${pct})` }} />
+                  </span>
+                ) : null}
+                {isBlocked && operation?.detail ? (
+                  <span className="operation-chip__reason">{operation.detail}</span>
+                ) : null}
               </div>
             );
           })}
         </div>
 
         <div className="operations__grid">
+          <section className="module-card module-card--wide">
+            <div className="module-card__head">
+              <span className="panel__title">
+                <PackageOpen size={14} />
+                Chest storage
+                <HelpTip text="Açıkken farmlar ürünü çıktı sandığına boşaltır ve tohum/blok gibi malzemeyi ikmal sandığından çeker. Envanter dolunca durmak yerine boşaltmaya gider; sandık dolu/eksikse yere hiçbir şey dökmeden duraklar ve Discord'dan bildirir. Kaktüs kendi hopper hattını kullanır." />
+              </span>
+              <Toggle label="Aktif" checked={storage.enabled} onChange={(enabled) => updateStorage({ enabled })} />
+            </div>
+            <div className="module-card__body module-card__body--stack">
+              <div className="area-coords">
+                <div className="position-capture">
+                  <PositionFields label="İkmal sandığı" value={storage.withdrawFrom} onChange={(withdrawFrom) => updateStorage({ withdrawFrom })} />
+                  <CaptureChestButton
+                    profileId={draft.id}
+                    online={session?.state === 'online'}
+                    onRequest={onCaptureChest}
+                    onCapture={(withdrawFrom) => updateStorage({ withdrawFrom })}
+                  />
+                </div>
+                <div className="position-capture">
+                  <PositionFields label="Çıktı sandığı" value={storage.depositTo} onChange={(depositTo) => updateStorage({ depositTo })} />
+                  <CaptureChestButton
+                    profileId={draft.id}
+                    online={session?.state === 'online'}
+                    onRequest={onCaptureChest}
+                    onCapture={(depositTo) => updateStorage({ depositTo })}
+                  />
+                </div>
+              </div>
+              <div className="area-controls">
+                <Field
+                  label="Boşalt eşiği"
+                  value={String(Math.round(storage.depositAtPercentFull * 100))}
+                  mono
+                  suffix="%"
+                  inputMode="numeric"
+                  onChange={(value) => updateStorage({ depositAtPercentFull: clamp((Number(value) || 80) / 100, 0.5, 0.95, 0.8) })}
+                />
+                <Field
+                  label="Tohum sakla"
+                  value={String(storage.keepSeedStacks)}
+                  mono
+                  suffix="stack"
+                  inputMode="numeric"
+                  onChange={(value) => updateStorage({ keepSeedStacks: clamp(Math.round(Number(value)), 0, 5, 1) })}
+                />
+                <Field
+                  label="Yeniden deneme"
+                  value={String(storage.retryAttempts)}
+                  mono
+                  inputMode="numeric"
+                  onChange={(value) => updateStorage({ retryAttempts: clamp(Math.round(Number(value)), 1, 10, 3) })}
+                />
+              </div>
+              <p className="module-hint">İki role aynı koordinatı verirsen tek sandık gibi davranır. Bot yere hiçbir zaman item dökmez.</p>
+            </div>
+          </section>
+
           <section className="module-card">
             <div className="module-card__head">
               <span className="panel__title">
@@ -1802,7 +1892,7 @@ function OperationsPanel({
             <div className="module-card__body">
               <Toggle
                 label="Otomatik farm kur"
-                help="Sadece kaktüs dikmek yerine kıran blok + toplama hattı içeren tam otomatik farm kurar. Bot her bloğa yürüyerek inşa eder."
+                help="Su + huni hatlı ikiz sıra havuz farmı kurar: kaktüsler ortak çit hattına büyüyüp kırılır, drop'lar su ile sandığa taşınır. Bot batı kenarda durmalı; farm doğuya (+X) 10, kuzeye (+Z) sıra başına 4 blok uzar."
                 checked={modules.cactusFarm.build}
                 onChange={(value) => updateCactus({ build: value })}
               />
@@ -1817,15 +1907,28 @@ function OperationsPanel({
                   onChange={(value) => updateCactus({ layers: value })}
                 />
               )}
-              <Slider
-                label="Radius"
-                help="Botun bulunduğu noktanın çevresinde kullanılacak farm yarıçapıdır."
-                min={1}
-                max={8}
-                value={modules.cactusFarm.radius}
-                display={`${modules.cactusFarm.radius}`}
-                onChange={(value) => updateCactus({ radius: value })}
-              />
+              {!modules.cactusFarm.build && (
+                <Slider
+                  label="Radius"
+                  help="Botun bulunduğu noktanın çevresinde kullanılacak dikim yarıçapıdır."
+                  min={1}
+                  max={8}
+                  value={modules.cactusFarm.radius}
+                  display={`${modules.cactusFarm.radius}`}
+                  onChange={(value) => updateCactus({ radius: value })}
+                />
+              )}
+              {modules.cactusFarm.build && (
+                <Slider
+                  label="Sıra çifti"
+                  help="Her sıra çifti 6 kaktüs ekler ve farmı kuzeye 4 blok uzatır (~1.5-2 kaktüs/saat/bitki)."
+                  min={1}
+                  max={8}
+                  value={modules.cactusFarm.rowPairs}
+                  display={`${modules.cactusFarm.rowPairs} (${modules.cactusFarm.rowPairs * 6} kaktüs)`}
+                  onChange={(value) => updateCactus({ rowPairs: value })}
+                />
+              )}
               {modules.cactusFarm.build && (
                 <label className="field">
                   <span className="field__label">Kırma bloğu</span>
@@ -1840,6 +1943,21 @@ function OperationsPanel({
                   </select>
                 </label>
               )}
+              {modules.cactusFarm.build && (
+                <label className="field">
+                  <span className="field__label">Duvar bloğu</span>
+                  <select
+                    value={modules.cactusFarm.wallBlock}
+                    onChange={(event) =>
+                      updateCactus({ wallBlock: event.target.value as BotModulesConfig['cactusFarm']['wallBlock'] })
+                    }
+                  >
+                    <option value="glass">Cam</option>
+                    <option value="cobblestone">Cobblestone</option>
+                    <option value="smooth_stone">Smooth stone</option>
+                  </select>
+                </label>
+              )}
               <Field
                 label="Place delay"
                 value={String(modules.cactusFarm.placementDelayMs)}
@@ -1850,8 +1968,8 @@ function OperationsPanel({
               />
               {modules.cactusFarm.build && (
                 <Toggle
-                  label="Toplama hattı"
-                  help="Düşen kaktüsleri toplamak için kırma bloğunun altına hopper hattı yerleştirir."
+                  label="Toplama sistemi"
+                  help="Huni hattı + sandık + su tabakasını da kurar (kapatılırsa yalnızca kuru havuz inşa edilir). Su için sıra çifti başına ~3 kova gerekir."
                   checked={modules.cactusFarm.buildCollection}
                   onChange={(value) => updateCactus({ buildCollection: value })}
                 />
@@ -2728,6 +2846,41 @@ function CapturePositionButton({
       >
         <Crosshair size={12} />
         Konumum
+      </button>
+    </ActionWithHelp>
+  );
+}
+
+function CaptureChestButton({
+  profileId,
+  online,
+  onRequest,
+  onCapture
+}: {
+  profileId: string;
+  online: boolean;
+  onRequest: (profileId: string) => Promise<PositionSnapshot | null>;
+  onCapture: (position: PositionSnapshot) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <ActionWithHelp help="Botun baktığı sandığı (yoksa yakınındaki sandığı) yakalayıp bu role yazar. Bot çevrimiçi olmalı.">
+      <button
+        type="button"
+        className="btn btn--xs"
+        disabled={!online || busy}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            const captured = await onRequest(profileId);
+            if (captured) onCapture({ x: Math.round(captured.x), y: Math.round(captured.y), z: Math.round(captured.z) });
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <Crosshair size={12} />
+        {busy ? '…' : 'Sandığı yakala'}
       </button>
     </ActionWithHelp>
   );
@@ -3803,6 +3956,15 @@ function normalizeDraftModules(modules: BotModulesConfig): BotModulesConfig {
       steps: normalizeDraftScriptSteps(modules.script.steps, 'step'),
       quickCommands: normalizeDraftScriptSteps(modules.script.quickCommands, 'quick')
     }
+  };
+}
+
+function profileStorage(profile: DraftProfile): StorageConfig {
+  return {
+    ...DEFAULT_STORAGE_UI,
+    ...profile.storage,
+    withdrawFrom: { ...DEFAULT_STORAGE_UI.withdrawFrom, ...profile.storage?.withdrawFrom },
+    depositTo: { ...DEFAULT_STORAGE_UI.depositTo, ...profile.storage?.depositTo }
   };
 }
 

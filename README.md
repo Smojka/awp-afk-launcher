@@ -7,7 +7,7 @@
 Manage many accounts, keep sessions alive, run lobby‑auth/transfer flows, drive farm & script automation, and watch live telemetry — from one dense operator UI.
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.3.0-6d5efc.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.4.0-6d5efc.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-8b5cf6.svg)](#platform-support-matrix)
 [![Electron](https://img.shields.io/badge/Electron-39-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB.svg?logo=react&logoColor=black)](https://react.dev/)
@@ -88,7 +88,8 @@ ChunkKeeper is a focused **operator console** for running one or more Minecraft 
 | **Join flow** | Gated on `spawn` so AFK actions never fire in the auth lobby · Login / Register / Custom / None · `{password}` substituted at runtime only · delayed `/smp`‑style transfer · ordered post‑transfer flow commands |
 | **AFK routine** | One randomized action per jittered tick: random look, jump pulse, sneak pulse, swing pulse, chat heartbeat · auto‑eat with safe‑food guard · auto‑respawn · exponential‑backoff reconnect |
 | **Automation** | Cactus farm · crop farm (7 crop types) · 3D area mine/fill · generator loop · looping command scripts · chat auto‑response rules · Discord webhook + remote‑command bridge |
-| **Telemetry** | Health, hunger, ping, X/Y/Z, dimension, players online, inventory usage · live inventory grid with item textures · chat console · pulse/event timeline |
+| **Unattended runs** | Shared **chest storage** — deposit harvest / restock seeds & fill‑blocks with a keep‑list (never dumps tools, buckets, food, or your active seed) · **auto‑resume** of running farms after an involuntary reconnect, behind a world‑validation gate · retry‑then‑safe‑pause on a full/missing chest (never drops items) · "capture chest from bot" button |
+| **Telemetry** | Health, hunger, ping, X/Y/Z, dimension, players online, inventory usage · live inventory grid with item textures · chat console · pulse/event timeline · live harvest‑progress bar |
 | **UX** | Tabbed workspace · persistent command bar with tab‑completion & quick‑commands · structured row editors · on‑screen `?` help on nearly every control · compact density · reduced‑motion & keyboard focus support |
 | **Ops** | In‑app auto‑update (silent on Windows, notify‑and‑download on macOS) · local browser‑dashboard build · Docker smoke server · live end‑to‑end test harness |
 
@@ -346,7 +347,7 @@ Everything is persisted to a **single `profiles.json`** file under the Electron 
 }
 ```
 
-An `AccountProfile` bundles: identity (`id`, `label`, `username`), connection (`host`, `port`, `version`, `authMode`, `enabled`), and nested config objects — `startup` (join flow), `routine` (AFK), `reconnect`, optional `proxy`, and optional `modules` (the seven operations).
+An `AccountProfile` bundles: identity (`id`, `label`, `username`), connection (`host`, `port`, `version`, `authMode`, `enabled`), and nested config objects — `startup` (join flow), `routine` (AFK), `reconnect`, optional `proxy`, optional `modules` (the seven operations), and optional `storage` (shared chest deposit/restock config).
 
 **One default profile ships:** `ARKONAS_SMP` → `play.arkonas.net:25565`, version `1.20.1`, `offline` auth, join flow enabled, **empty username** (fill it in before connecting).
 
@@ -455,16 +456,17 @@ The Electron window is preferred at **1280×760** and clamps to a **760×540** m
 The **Operations** tab runs active automation against the selected online bot. Each module has visible Start/Stop state, config, and progress/stat feedback. Module *settings* can be saved to the profile, but **runtime secrets are never persisted**. Every operation requires the bot to be **online** and reports an `OperationSnapshot` (`idle` / `running` / `complete` / `blocked` / `error`, plus detail, counts, and a stats map). Modules that need to reach out‑of‑range blocks can optionally **walk** via `mineflayer-pathfinder` (tamed: no sprinting, no digging, no 1×1 towers); when the plugin is absent, walking degrades to a no‑op.
 
 ### Cactus farm
-Builds an auto‑harvesting cactus farm (or plants bare sand+cactus columns) from a computed placement plan, checking inventory has every required material first.
+Builds a self‑contained **twin‑row basin farm** (or plants bare sand+cactus columns) from a computed placement plan, checking inventory has every required material first. Each row pair shares one fence lattice between two cactus rows, a water sheet washes drops into a hopper line, and a containment ring keeps everything sealed — verified end‑to‑end against a live server (drops reliably reach the output chest).
 
 | Option | Meaning | Default |
 | --- | --- | --- |
-| `radius` | Footprint half‑extent (cacti spaced 2×/4×) | `2` |
+| `rowPairs` | Number of twin cactus rows, 1–8 (6 plants each) | `1` |
+| `wallBlock` | Basin floor/ring/strip block — `glass`, `cobblestone`, or `smooth_stone` | `glass` |
 | `placementDelayMs` | Delay between placements (100–10000) | `550` |
-| `build` | Full auto‑harvest farm vs bare columns | `true` |
+| `build` | Full auto‑harvest basin vs bare columns | `true` |
 | `breakBlock` | Thin block that snaps cactus off — `oak_fence` or `glass_pane` | `oak_fence` |
-| `buildCollection` | Add a hopper line under the drop gap | `true` |
-| `layers` | Clamped 1–12 — **currently a no‑op** (geometry ignores it) | `1` |
+| `buildCollection` | Add the hopper line, chest, and water sheet | `true` |
+| `layers` / `radius` | Only used when `build` is off (bare planting grid) | `1` / `2` |
 
 ### Crop farm
 Optional till + water + plant build pass, then an endless harvest loop that scans a box, digs mature crops, and optionally replants.
@@ -472,7 +474,7 @@ Optional till + water + plant build pass, then an endless harvest loop that scan
 | Option | Meaning | Default |
 | --- | --- | --- |
 | `crop` | `wheat` · `carrot` · `potato` · `beetroot` · `nether_wart` · `pumpkin` · `melon` | `wheat` |
-| `radius` | Harvest‑scan half‑extent (build footprint capped at 4 so water reaches) | `4` |
+| `radius` | Field half‑extent, 1–16 (an 8‑spaced water lattice keeps large fields fully hydrated) | `4` |
 | `harvestDelayMs` | Build‑step and harvest‑tick interval (100–30000) | `750` |
 | `replant` | Replant a seed after harvest if available | `true` |
 | `collectDrops` | Count collected drops in stats | `true` |
@@ -503,6 +505,25 @@ Continuously mines up to **16 configured relative "slots"** (arbitrary `{x,y,z}`
 | `walk` | Walk within reach before mining (usually off for AFK) | `false` |
 | `actionDelayMs` | Delay between mine actions (100–30000) | `350` |
 | `regenDelayMs` | Extra pause after each full pass (0–120000) | `1500` |
+
+### Chest storage (unattended runs)
+A **profile‑level** setting shared by every farm, **off by default**. When enabled, farms deposit their output and pull supplies from chests instead of stalling once the inventory fills or seeds run out — so a session can run for days unattended. Configure it from the **Chest storage** card at the top of the Operations tab.
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `enabled` | Master switch; off = farms behave exactly as before | `false` |
+| `withdrawFrom` | Supply chest — seeds / fill‑blocks are pulled from here | `{0,0,0}` |
+| `depositTo` | Output chest — harvest is deposited here (same coords as `withdrawFrom` ⇒ one chest) | `{0,0,0}` |
+| `depositAtPercentFull` | Deposit trip fires at this inventory fill fraction (0.5–0.95) | `0.80` |
+| `keepSeedStacks` | Stacks of the active replant seed to keep when depositing | `1` |
+| `retryAttempts` | Trip retries before the op safe‑pauses (1–10) | `3` |
+
+**Behaviour**
+- **Keep‑list:** the bot never deposits worn armor, tools (`*_hoe/_axe/_pickaxe/_shovel/_sword`), buckets, edibles, or up to `keepSeedStacks×64` of the active seed. Everything else is deposited; seed surplus above the cap is deposited too.
+- **Roles per farm:** crop → both; area‑fill → supply; area‑mine / generator → output. **Cactus** relies on its own in‑world hoppers (the bot never touches the cactus), so its output chest is a documented runtime no‑op.
+- **No item loss:** if a chest is full, missing, or unreachable, the trip retries then **safe‑pauses** the operation (`blocked` + reason + Discord alert). The bot never drops items on the ground; overflow to extra chests is a v2 item.
+- **Auto‑resume:** after an *involuntary* disconnect the reconnect policy brings the bot back and the running farms re‑launch automatically — but only after a quick world check (chests present, farm origin intact). If the world changed, the op pauses with a clear reason instead of blindly resuming. An operator‑initiated stop is never auto‑resumed.
+- **Capture button:** *Sandığı yakala* fills a chest's coordinates from the block the bot is looking at (else the nearest chest within reach). The chest must be walkable‑to — the tamed pathfinder won't tunnel to it.
 
 ### Command script
 Runs an ordered list of chat commands with per‑step delays, optionally looping. Separately exposes one‑shot **quick commands** that surface as buttons in the command bar.

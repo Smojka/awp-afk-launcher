@@ -2036,6 +2036,19 @@ textarea {
   color: var(--danger);
 }
 
+.operation-chip__reason {
+  overflow: hidden;
+  color: var(--danger);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  /* let the pause reason wrap to at most two lines so "deposit chest full" is readable at a glance */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 .operations__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -274,6 +274,11 @@ async function handleApiRequest(
     return;
   }
 
+  if (request.method === 'POST' && parts.length === 4 && parts[0] === 'api' && parts[1] === 'bots' && parts[3] === 'capture-position') {
+    sendJson(request, response, 200, { position: await options.manager.capturePosition(parts[2]) });
+    return;
+  }
+
   if (request.method === 'POST' && parts.length === 4 && parts[0] === 'api' && parts[1] === 'bots' && parts[3] === 'discord') {
     const body = await readJsonBody<DiscordRuntimeInput>(request);
     sendJson(request, response, 200, await options.manager.configureDiscord(parts[2], body));

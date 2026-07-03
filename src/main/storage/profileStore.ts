@@ -59,7 +59,14 @@ function stripProfileSecrets(profile: AccountProfile): AccountProfile {
     },
     reconnect: { ...profile.reconnect },
     proxy: profile.proxy ? { ...profile.proxy, password: '' } : profile.proxy,
-    modules: profile.modules ? stripModuleSecrets(profile.modules) : profile.modules
+    modules: profile.modules ? stripModuleSecrets(profile.modules) : profile.modules,
+    storage: profile.storage
+      ? {
+          ...profile.storage,
+          withdrawFrom: { ...profile.storage.withdrawFrom },
+          depositTo: { ...profile.storage.depositTo }
+        }
+      : profile.storage
   };
 }
 

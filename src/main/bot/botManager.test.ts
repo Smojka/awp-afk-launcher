@@ -11,7 +11,7 @@ import {
   type MineflayerFactory
 } from './botManager';
 import type { CactusFarmConfig, CropFarmConfig } from '../../shared/types';
-import type { AccountProfile } from '../../shared/types';
+import type { AccountProfile, StorageConfig } from '../../shared/types';
 import type { ProfileDocument } from '../storage/profileStore';
 
 class MemoryStore {
@@ -144,7 +144,12 @@ function attachWorld(bot: FakeBot, groundName = 'stone', groundY = 64) {
     lastLook = floor(p);
   });
   b.activateItem = vi.fn(async () => {
-    if (lastLook) placed.set(key(lastLook.x, lastLook.y, lastLook.z), 'water');
+    // Mimic a bucket pour: if the crosshair block is solid the water lands in the
+    // cell ABOVE it (clicking a top face), otherwise in the looked-at cell itself.
+    if (!lastLook) return;
+    const looked = placed.get(key(lastLook.x, lastLook.y, lastLook.z)) ?? (lastLook.y <= groundY ? groundName : 'air');
+    const target = looked === 'air' ? lastLook : { x: lastLook.x, y: lastLook.y + 1, z: lastLook.z };
+    placed.set(key(target.x, target.y, target.z), 'water');
   });
   return { placed, key };
 }
@@ -724,7 +729,10 @@ describe('BotManager', () => {
       { name: 'sand', displayName: 'Sand', count: 64 },
       { name: 'cactus', displayName: 'Cactus', count: 64 },
       { name: 'oak_fence', displayName: 'Oak Fence', count: 64 },
-      { name: 'hopper', displayName: 'Hopper', count: 64 }
+      { name: 'hopper', displayName: 'Hopper', count: 64 },
+      { name: 'chest', displayName: 'Chest', count: 64 },
+      { name: 'glass', displayName: 'Glass', count: 256 },
+      { name: 'water_bucket', displayName: 'Water Bucket', count: 16 }
     ];
     attachWorld(fakeBot);
     const manager = new BotManager({
@@ -739,26 +747,27 @@ describe('BotManager', () => {
     fakeBot.emit('spawn');
     await manager.startOperation(profile.id, {
       kind: 'cactusFarm',
-      config: { radius: 1, placementDelayMs: 50, build: true, breakBlock: 'oak_fence', buildCollection: true }
+      config: { placementDelayMs: 50, build: true, breakBlock: 'oak_fence', buildCollection: true, rowPairs: 1, wallBlock: 'glass' }
     });
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(30000);
 
     const state = manager.getState();
     const operation = state.sessions[profile.id].operations.cactusFarm;
-    expect(fakeBot.equip).toHaveBeenCalledWith(expect.objectContaining({ name: 'sand' }), 'hand');
-    expect(fakeBot.equip).toHaveBeenCalledWith(expect.objectContaining({ name: 'cactus' }), 'hand');
-    expect(fakeBot.equip).toHaveBeenCalledWith(expect.objectContaining({ name: 'oak_fence' }), 'hand');
-    expect(fakeBot.equip).toHaveBeenCalledWith(expect.objectContaining({ name: 'hopper' }), 'hand');
+    for (const name of ['sand', 'cactus', 'oak_fence', 'hopper', 'chest', 'glass', 'water_bucket']) {
+      expect(fakeBot.equip).toHaveBeenCalledWith(expect.objectContaining({ name }), 'hand');
+    }
     expect(operation.state).toBe('complete');
-    // radius 1 → 2 cactus units × 7 placements (sand, cactus, 3× post, trigger, hopper)
-    expect(operation.total).toBe(14);
-    expect(operation.completed).toBe(14);
-    expect(fakeBot.placeBlock).toHaveBeenCalledTimes(14);
-    // the trigger leans on the post top via a SIDE face (-Z) — impossible with the
-    // old below-only placeItemAt, which is why placeBlockAgainst exists.
+    // one row pair: chest 1 + hoppers 5 + floor 35 + ring base 29 + W/S/N walls 92
+    // + row strips 14 + fences 7 + cacti 6 + water 3 + east wall 28 = 220
+    expect(operation.total).toBe(220);
+    expect(operation.completed).toBe(220);
+    // water is poured with the bucket, everything else with placeBlock
+    expect(fakeBot.placeBlock).toHaveBeenCalledTimes(217);
+    expect(fakeBot.activateItem).toHaveBeenCalledTimes(3);
+    // the hopper chain is clicked onto the downstream block's +Z face with sneak held
     const placeCalls = fakeBot.placeBlock.mock.calls as unknown as Array<[unknown, { x: number; y: number; z: number }]>;
-    const usedSideFace = placeCalls.some(([, face]) => face && face.z === -1);
-    expect(usedSideFace).toBe(true);
+    expect(placeCalls.some(([, face]) => face && face.z === 1)).toBe(true);
+    expect(fakeBot.setControlState).toHaveBeenCalledWith('sneak', true);
   });
 
   it('builds a crop farm (till + water + plant) then hands off to the harvest loop', async () => {
@@ -795,11 +804,48 @@ describe('BotManager', () => {
 
     const operation = manager.getState().sessions[profile.id].operations.cropFarm;
     expect(operation.state).toBe('running');
-    expect(operation.total).toBeNull();
-    expect((operation.detail ?? '').toLowerCase()).toContain('hasat');
+    // Harvest phase now reports a real total: nothing is ripe yet (seeds just planted), so total is 0.
+    expect(operation.total).toBe(0);
+    expect((operation.detail ?? '').toLowerCase()).toContain('olgunlaşıyor');
   });
 
-  it('blocks the crop build when auto water cannot be placed and no water exists', async () => {
+  it('reports harvest progress from ripe crops and tallies a lifetime harvested stat', async () => {
+    vi.useFakeTimers();
+    const fakeBot = new FakeBot();
+    fakeBot.inventory.items = () => [{ name: 'wheat_seeds', displayName: 'Wheat Seeds', count: 64 }];
+    // Two ripe wheat blocks near the bot; digging one clears it (harvested). Everything else air.
+    const p = fakeBot.entity.position;
+    const key = (b: { x: number; y: number; z: number }) => `${Math.floor(b.x)},${Math.floor(b.y)},${Math.floor(b.z)}`;
+    const ripe = new Set<string>([key({ x: p.x + 1, y: p.y, z: p.z }), key({ x: p.x - 1, y: p.y, z: p.z })]);
+    const b = fakeBot as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    b.blockAt = vi.fn((q: { x: number; y: number; z: number }) => {
+      const wheat = ripe.has(key(q));
+      return { name: wheat ? 'wheat' : 'air', displayName: 'x', position: q, boundingBox: wheat ? 'block' : 'empty', metadata: 7 };
+    });
+    b.dig = vi.fn(async (block: { position: { x: number; y: number; z: number } }) => {
+      ripe.delete(key(block.position));
+    });
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+    await manager.startOperation(profile.id, {
+      kind: 'cropFarm',
+      config: { crop: 'wheat', radius: 2, harvestDelayMs: 20, build: false, replant: false }
+    });
+    await vi.advanceTimersByTimeAsync(200);
+
+    const operation = manager.getState().sessions[profile.id].operations.cropFarm;
+    expect(operation.stats.harvested).toBe(2);
+  });
+
+  it('tolerates a failed auto-water placement and still builds the field (soft-skip, no abort)', async () => {
     vi.useFakeTimers();
     const fakeBot = new FakeBot();
     fakeBot.inventory.items = () => [
@@ -808,7 +854,7 @@ describe('BotManager', () => {
       { name: 'water_bucket', displayName: 'Water Bucket', count: 1 }
     ];
     attachWorld(fakeBot, 'dirt');
-    // bucket use is a no-op here, so the centre never becomes water
+    // bucket use is a no-op here, so the water source cell never becomes water
     fakeBot.activateItem = vi.fn(async () => undefined);
     const manager = new BotManager({
       userDataDir: '/tmp/afk-launcher-test',
@@ -827,8 +873,9 @@ describe('BotManager', () => {
     await vi.advanceTimersByTimeAsync(3000);
 
     const operation = manager.getState().sessions[profile.id].operations.cropFarm;
-    expect(operation.state).toBe('blocked');
-    expect((operation.detail ?? '').toLowerCase()).toContain('water');
+    // A single failed water cell no longer aborts the whole build; it proceeds to the harvest loop.
+    expect(operation.state).not.toBe('blocked');
+    expect(operation.state).toBe('running');
   });
 
   it('runs quick scripts and exposes tab-completion suggestions from the bot', async () => {
@@ -943,7 +990,7 @@ describe('BotManager', () => {
     const autoResponseProfile: AccountProfile = {
       ...profile,
       modules: {
-        cactusFarm: { enabled: false, layers: 1, radius: 1, placementDelayMs: 100, build: true, breakBlock: 'oak_fence', buildCollection: true },
+        cactusFarm: { enabled: false, layers: 1, radius: 1, placementDelayMs: 100, build: true, breakBlock: 'oak_fence', buildCollection: true, rowPairs: 1, wallBlock: 'glass' },
         cropFarm: { enabled: false, crop: 'wheat', radius: 2, harvestDelayMs: 100, replant: true, collectDrops: true, build: true, autoTill: true, waterMode: 'auto' },
         area: {
           enabled: false,
@@ -1140,7 +1187,9 @@ const cactusConfig: CactusFarmConfig = {
   placementDelayMs: 100,
   build: true,
   breakBlock: 'oak_fence',
-  buildCollection: true
+  buildCollection: true,
+  rowPairs: 1,
+  wallBlock: 'glass'
 };
 
 const cropConfig: CropFarmConfig = {
@@ -1161,20 +1210,23 @@ describe('cactusFarmPlan', () => {
   const origin = { x: 0, y: 70, z: 0 };
   const plan = cactusFarmPlan(origin, cactusConfig);
   const places = plan.filter((item) => item.action === 'place');
+  const waters = plan.filter((item) => item.action === 'water');
   const cacti = places.filter((item) => item.itemName === 'cactus');
   const placedSet = new Set(places.map((item) => posKey(item.position)));
 
-  it('puts a break trigger one block above each cactus, horizontally adjacent to the grow cell', () => {
-    expect(cacti.length).toBeGreaterThan(0);
+  it('gives every grow cell exactly one horizontal neighbour: the shared break lattice', () => {
+    expect(cacti.length).toBe(6);
     for (const cactus of cacti) {
       const grow = { x: cactus.position.x, y: cactus.position.y + 1, z: cactus.position.z };
-      const hasTrigger = places.some(
-        (item) =>
-          item.itemName === cactusConfig.breakBlock &&
-          item.position.y === grow.y &&
-          Math.abs(item.position.x - grow.x) + Math.abs(item.position.z - grow.z) === 1
-      );
-      expect(hasTrigger).toBe(true);
+      const solidNeighbours = [
+        { x: grow.x + 1, y: grow.y, z: grow.z },
+        { x: grow.x - 1, y: grow.y, z: grow.z },
+        { x: grow.x, y: grow.y, z: grow.z + 1 },
+        { x: grow.x, y: grow.y, z: grow.z - 1 }
+      ].filter((n) => placedSet.has(posKey(n)));
+      expect(solidNeighbours.length).toBe(1);
+      const breaker = places.find((item) => posKey(item.position) === posKey(solidNeighbours[0]));
+      expect(breaker?.itemName).toBe(cactusConfig.breakBlock);
     }
   });
 
@@ -1211,23 +1263,77 @@ describe('cactusFarmPlan', () => {
       expect(sandIdx).toBeGreaterThanOrEqual(0);
       expect(sandIdx).toBeLessThan(cactusIdx);
     }
-    // exactly one trigger per cactus (the +Z grow-cell neighbour at cactus.y + 1)
-    const triggers = places.filter((item) =>
-      item.itemName === cactusConfig.breakBlock &&
-      cacti.some(
-        (c) => c.position.x === item.position.x && item.position.z === c.position.z + 1 && item.position.y === c.position.y + 1
-      )
-    );
-    expect(triggers.length).toBe(cacti.length);
   });
 
-  it('counts materials: sand and cactus per unit, 4 break-blocks per unit, a hopper per unit', () => {
-    const count = (name: string) => places.filter((item) => item.itemName === name).length;
-    const units = cacti.length;
-    expect(count('sand')).toBe(units);
-    expect(count('cactus')).toBe(units);
-    expect(count('oak_fence')).toBe(units * 4); // 3 post + 1 trigger
-    expect(count('hopper')).toBe(units);
+  it('chains every hopper into its southern neighbour with sneak, ending at the chest', () => {
+    const hoppers = places.filter((item) => item.itemName === 'hopper');
+    const chest = places.find((item) => item.itemName === 'chest');
+    expect(hoppers.length).toBe(5);
+    expect(chest).toBeDefined();
+    for (const hopper of hoppers) {
+      expect(hopper.sneak).toBe(true);
+      expect(hopper.against).toEqual({
+        x: hopper.position.x,
+        y: hopper.position.y,
+        z: hopper.position.z - 1
+      });
+      expect(plan.indexOf(hopper)).toBeGreaterThan(plan.indexOf(chest!));
+    }
+    const southmost = hoppers.reduce((a, b) => (a.position.z < b.position.z ? a : b));
+    expect(southmost.against).toEqual(chest!.position);
+  });
+
+  it('anchors each fence line on the west ring and chains it eastward', () => {
+    const fences = places.filter((item) => item.itemName === cactusConfig.breakBlock);
+    expect(fences.length).toBe(7);
+    for (const fence of fences) {
+      expect(fence.against).toEqual({
+        x: fence.position.x - 1,
+        y: fence.position.y,
+        z: fence.position.z
+      });
+      const anchor = places.find((item) => posKey(item.position) === posKey(fence.against!));
+      expect(anchor).toBeDefined();
+      expect(plan.indexOf(anchor!)).toBeLessThan(plan.indexOf(fence));
+    }
+  });
+
+  it('pours the water from outside before sealing the east wall', () => {
+    expect(waters.length).toBe(3);
+    const lastWaterIdx = Math.max(...waters.map((w) => plan.indexOf(w)));
+    for (const water of waters) {
+      expect(water.stance).toEqual({ x: origin.x + 9, y: origin.y, z: water.position.z });
+    }
+    const eastWall = places.filter(
+      (item) => item.position.x === origin.x + 8 && item.position.y > origin.y
+    );
+    expect(eastWall.length).toBe(28); // 7 ring columns × 4 layers
+    for (const item of eastWall) {
+      expect(plan.indexOf(item)).toBeGreaterThan(lastWaterIdx);
+    }
+  });
+
+  it('scales with rowPairs: 2 pairs double the plants and extend the lattice', () => {
+    const plan2 = cactusFarmPlan(origin, { ...cactusConfig, rowPairs: 2 });
+    const places2 = plan2.filter((item) => item.action === 'place');
+    const count = (name: string) => places2.filter((item) => item.itemName === name).length;
+    expect(count('cactus')).toBe(12);
+    expect(count('sand')).toBe(12);
+    expect(count('hopper')).toBe(9);
+    expect(count('oak_fence')).toBe(14);
+    expect(plan2.filter((item) => item.action === 'water').length).toBe(5);
+  });
+
+  it('drops the collection system when buildCollection is off', () => {
+    const dry = cactusFarmPlan(origin, { ...cactusConfig, buildCollection: false });
+    expect(dry.some((item) => item.action === 'water')).toBe(false);
+    expect(dry.some((item) => item.itemName === 'hopper' || item.itemName === 'chest')).toBe(false);
+  });
+
+  it('keeps the bare planting grid when build is off', () => {
+    const bare = cactusFarmPlan(origin, { ...cactusConfig, build: false });
+    expect(bare.length).toBeGreaterThan(0);
+    expect(bare.every((item) => item.itemName === 'sand' || item.itemName === 'cactus')).toBe(true);
   });
 });
 
@@ -1237,7 +1343,7 @@ describe('cropBuildPlan', () => {
 
   it('covers a 9x9 footprint with water at the centre and a seed on every other cell', () => {
     expect(plan.footprint.length).toBe(81);
-    expect(posKey(plan.waterPos)).toBe(posKey({ x: 0, y: 69, z: 0 }));
+    expect(plan.waterCells.map(posKey)).toEqual([posKey({ x: 0, y: 69, z: 0 })]);
     expect(plan.plant.length).toBe(80);
     expect(plan.plant.every((item) => item.itemName === 'wheat_seeds')).toBe(true);
   });
@@ -1416,5 +1522,280 @@ describe('BotManager inventory actions', () => {
     expect(inv.window.kind).toBe('container');
     expect(inv.window.inventoryStart).toBe(27);
     expect(inv.openWindowTitle).toBe('Chest');
+  });
+});
+
+describe('runWorkItem failure softening', () => {
+  const fillConfig = (from: { x: number; y: number; z: number }, to: { x: number; y: number; z: number }) => ({
+    enabled: true,
+    mode: 'fill' as const,
+    coords: 'relative' as const,
+    from,
+    to,
+    fillBlock: 'cobblestone',
+    hollow: false,
+    walk: false, // placeItemAt path — fails cleanly (empty inventory) without needing a reference face
+    actionDelayMs: 10
+  });
+
+  async function runFill(to: { x: number; y: number; z: number }) {
+    vi.useFakeTimers();
+    const fakeBot = new FakeBot(); // empty inventory → every fill placement returns false
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+    await manager.startOperation(profile.id, { kind: 'area', config: fillConfig({ x: 0, y: 0, z: 0 }, to) });
+    await vi.advanceTimersByTimeAsync(3000);
+    return manager.getState().sessions[profile.id].operations.area;
+  }
+
+  it('blocks only after MAX consecutive failures, not on the first', async () => {
+    const op = await runFill({ x: 2, y: 0, z: 2 }); // 9 cells, all fail
+    expect(op.state).toBe('blocked');
+    expect(op.detail).toContain('consecutive failures');
+    expect(op.stats.failed).toBe(8); // blocked exactly at the streak cap
+  });
+
+  it('finishes a small all-failing fill instead of aborting (under the cap)', async () => {
+    const op = await runFill({ x: 1, y: 0, z: 1 }); // 4 cells, all fail
+    expect(op.state).toBe('complete');
+    expect(op.stats.failed).toBe(4);
+  });
+});
+
+describe('chest storage lifecycle', () => {
+  const CHEST = { x: 100, y: 64, z: 100 };
+  const storageProfile = (overrides: Partial<StorageConfig> = {}): AccountProfile => ({
+    ...profile,
+    storage: {
+      enabled: true,
+      withdrawFrom: { x: 0, y: 0, z: 0 },
+      depositTo: CHEST,
+      depositAtPercentFull: 0.8,
+      keepSeedStacks: 1,
+      retryAttempts: 2,
+      ...overrides
+    }
+  });
+
+  /** Give the bot a stateful main inventory + an output chest at `chestPos` that deposit() drains into. */
+  function attachStorageWorld(bot: FakeBot, chestPos: { x: number; y: number; z: number }, main: Array<{ name: string; type: number; count: number }>) {
+    const chest: Array<{ type: number; count: number }> = [];
+    const key = (p: { x: number; y: number; z: number }) => `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}`;
+    const b = bot as unknown as Record<string, ReturnType<typeof vi.fn>>;
+    b.blockAt = vi.fn((p: { x: number; y: number; z: number }) => {
+      const isChest = key(p) === key(chestPos);
+      return { name: isChest ? 'chest' : 'air', displayName: 'x', position: p, boundingBox: isChest ? 'block' : 'empty', metadata: 0 };
+    });
+    bot.inventory.items = () => main.filter((it) => it.count > 0);
+    b.openContainer = vi.fn(async () => ({
+      deposit: async (type: number, _meta: number | null, count: number | null) => {
+        let remaining = count ?? Infinity;
+        for (const it of main.filter((entry) => entry.type === type && entry.count > 0)) {
+          const take = Math.min(it.count, remaining);
+          it.count -= take;
+          remaining -= take;
+          chest.push({ type, count: take });
+          if (remaining <= 0) break;
+        }
+      },
+      withdraw: async () => undefined,
+      close: () => undefined,
+      emptySlotCount: () => 20,
+      containerCount: () => 0
+    }));
+    b.closeWindow = vi.fn();
+    return { chest, main };
+  }
+
+  async function startGeneratorWith(storeProfile: AccountProfile, fakeBot: FakeBot) {
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([storeProfile])
+    });
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+    await manager.startOperation(profile.id, { kind: 'generator', config: {} });
+    return manager;
+  }
+
+  it('deposits mined output to the chest when the inventory fills, keeping tools and continuing', async () => {
+    vi.useFakeTimers();
+    const fakeBot = new FakeBot();
+    const main = [
+      ...Array.from({ length: 30 }, () => ({ name: 'cobblestone', type: 1, count: 64 })),
+      { name: 'iron_pickaxe', type: 2, count: 1 }
+    ];
+    const { chest } = attachStorageWorld(fakeBot, CHEST, main);
+    const manager = await startGeneratorWith(storageProfile(), fakeBot);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(main.filter((it) => it.name === 'cobblestone' && it.count > 0)).toHaveLength(0); // deposited
+    expect(main.some((it) => it.name === 'iron_pickaxe' && it.count > 0)).toBe(true); // tool kept
+    expect(chest.some((c) => c.type === 1)).toBe(true); // landed in the chest
+    expect(manager.getState().sessions[profile.id].operations.generator.state).toBe('running');
+  });
+
+  it('safe-pauses (no item loss) when the deposit chest is missing', async () => {
+    vi.useFakeTimers();
+    const fakeBot = new FakeBot();
+    // Near-full of depositable cobblestone; the bot can open chests, but blockAt returns stone
+    // everywhere (default), so the configured deposit coords are not a container → "missing".
+    fakeBot.inventory.items = () => Array.from({ length: 30 }, () => ({ name: 'cobblestone', type: 1, count: 64 }));
+    (fakeBot as unknown as { openContainer: unknown }).openContainer = vi.fn(async () => ({ deposit: async () => undefined, close: () => undefined }));
+    const manager = await startGeneratorWith(storageProfile({ retryAttempts: 2 }), fakeBot);
+    await vi.advanceTimersByTimeAsync(12000);
+
+    const op = manager.getState().sessions[profile.id].operations.generator;
+    expect(op.state).toBe('blocked');
+    expect((op.detail ?? '').toLowerCase()).toContain('deposit');
+    expect(fakeBot.toss).not.toHaveBeenCalled();
+    expect(fakeBot.tossStack).not.toHaveBeenCalled();
+  });
+});
+
+describe('auto-resume after reconnect', () => {
+  function reconnectSetup(storeProfile: AccountProfile) {
+    const bots: FakeBot[] = [];
+    const factory: MineflayerFactory = vi.fn(() => {
+      const b = new FakeBot();
+      bots.push(b);
+      return b;
+    });
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory,
+      store: new MemoryStore([storeProfile])
+    });
+    return { bots, factory, manager };
+  }
+
+  // baseDelayMs is clamped to a 1000ms minimum by normalizeProfile, so drive reconnects past that.
+  const RECONNECT_MS = 1200;
+  const reconnectProfile = (storage?: Partial<StorageConfig>): AccountProfile => ({
+    ...profile,
+    reconnect: { enabled: true, maxAttempts: 3, baseDelayMs: 1000, maxDelayMs: 1000 },
+    ...(storage
+      ? {
+          storage: {
+            enabled: true,
+            withdrawFrom: { x: 0, y: 0, z: 0 },
+            depositTo: { x: 50, y: 64, z: 50 },
+            depositAtPercentFull: 0.8,
+            keepSeedStacks: 1,
+            retryAttempts: 2,
+            ...storage
+          }
+        }
+      : {})
+  });
+
+  it('relaunches a running farm after an involuntary disconnect', async () => {
+    vi.useFakeTimers();
+    const { bots, factory, manager } = reconnectSetup(reconnectProfile());
+    await manager.load();
+    await manager.connect(profile.id);
+    bots[0].emit('spawn');
+    await manager.startOperation(profile.id, { kind: 'generator', config: {} });
+    expect(manager.getState().sessions[profile.id].operations.generator.state).toBe('running');
+
+    bots[0].emit('end'); // involuntary drop → ops go idle, resume state survives
+    expect(manager.getState().sessions[profile.id].operations.generator.state).toBe('idle');
+
+    await vi.advanceTimersByTimeAsync(RECONNECT_MS); // reconnect timer fires, a fresh bot is created
+    expect(factory).toHaveBeenCalledTimes(2);
+    bots[1].emit('spawn');
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(manager.getState().sessions[profile.id].operations.generator.state).toBe('running');
+  });
+
+  it('does not resume an operation the operator stopped before the drop', async () => {
+    vi.useFakeTimers();
+    const { bots, factory, manager } = reconnectSetup(reconnectProfile());
+    await manager.load();
+    await manager.connect(profile.id);
+    bots[0].emit('spawn');
+    await manager.startOperation(profile.id, { kind: 'generator', config: {} });
+    await manager.stopOperation(profile.id, 'generator'); // operator stop clears the resume record
+
+    bots[0].emit('end'); // now an involuntary drop happens
+    await vi.advanceTimersByTimeAsync(RECONNECT_MS);
+    expect(factory).toHaveBeenCalledTimes(2);
+    bots[1].emit('spawn');
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(manager.getState().sessions[profile.id].operations.generator.state).not.toBe('running');
+  });
+
+  it('aborts resume when world validation fails (deposit chest is gone)', async () => {
+    vi.useFakeTimers();
+    const { bots, manager } = reconnectSetup(reconnectProfile({ depositTo: { x: 50, y: 64, z: 50 } }));
+    await manager.load();
+    await manager.connect(profile.id);
+    bots[0].emit('spawn');
+    await manager.startOperation(profile.id, { kind: 'generator', config: {} });
+
+    bots[0].emit('end');
+    await vi.advanceTimersByTimeAsync(RECONNECT_MS);
+    bots[1].emit('spawn'); // fresh bot's blockAt returns 'stone' at depositTo → not a container
+    await vi.advanceTimersByTimeAsync(100);
+
+    const op = manager.getState().sessions[profile.id].operations.generator;
+    expect(op.state).toBe('blocked');
+    expect((op.detail ?? '').toLowerCase()).toContain('resume aborted');
+  });
+});
+
+describe('capturePosition', () => {
+  async function onlineManager(setup: (bot: FakeBot) => void) {
+    const fakeBot = new FakeBot();
+    setup(fakeBot);
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+    return manager;
+  }
+
+  it('returns the coordinates of the chest the bot is looking at', async () => {
+    const manager = await onlineManager((bot) => {
+      (bot as unknown as { blockAtCursor: unknown }).blockAtCursor = () => ({ name: 'chest', position: { x: 5, y: 64, z: -3 }, boundingBox: 'block' });
+    });
+    expect(await manager.capturePosition(profile.id)).toEqual({ x: 5, y: 64, z: -3 });
+  });
+
+  it('falls back to the nearest container when not looking at one', async () => {
+    const manager = await onlineManager((bot) => {
+      (bot as unknown as { blockAtCursor: unknown }).blockAtCursor = () => ({ name: 'stone', position: { x: 0, y: 0, z: 0 }, boundingBox: 'block' });
+      (bot as unknown as { findBlock: unknown }).findBlock = () => ({ name: 'barrel', position: { x: 7, y: 63, z: 7 } });
+    });
+    expect(await manager.capturePosition(profile.id)).toEqual({ x: 7, y: 63, z: 7 });
+  });
+
+  it('returns null when the bot is offline', async () => {
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => new FakeBot(),
+      store: new MemoryStore([profile])
+    });
+    await manager.load();
+    expect(await manager.capturePosition(profile.id)).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ import type {
   LauncherState,
   OperationKind,
   OperationStartRequest,
+  PositionSnapshot,
   SaveProfileInput,
   UpdateCheckResult
 } from '../shared/types';
@@ -125,6 +126,13 @@ function createHttpLauncherApi(baseUrl: string): LauncherApi {
         body: JSON.stringify({ partial })
       });
       return result.completions;
+    },
+    capturePosition: async (profileId: string) => {
+      const result = await request<{ position: PositionSnapshot | null }>(
+        `/api/bots/${encodeURIComponent(profileId)}/capture-position`,
+        { method: 'POST' }
+      );
+      return result.position;
     },
     configureDiscord: async (profileId: string, input: DiscordRuntimeInput) =>
       request<LauncherState>(`/api/bots/${encodeURIComponent(profileId)}/discord`, {
