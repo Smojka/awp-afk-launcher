@@ -76,7 +76,28 @@ const DEVELOPER_CREDIT = 'Developed by smojka';
 // Quick-pick Minecraft versions surfaced in the profile editor. A profile may carry
 // any other version string (e.g. an older save or a build outside this list); the
 // editor renders that value as an extra option so editing never silently drops it.
-const PRESET_VERSIONS = ['1.21.1', '1.20.6', '1.20.1', '1.19.4'];
+// This list is the intersection of mineflayer's supported versions and the
+// minecraft-data folders bundled into the packaged app (see build.files in
+// package.json) — every entry is guaranteed to load in both dev and the shipped DMG.
+// Older versions (<=1.18.2) are intentionally excluded because their data folders are
+// pruned from the package and would crash at runtime. Ordered newest-first.
+const PRESET_VERSIONS = [
+  '1.21.11',
+  '1.21.9',
+  '1.21.8',
+  '1.21.6',
+  '1.21.5',
+  '1.21.4',
+  '1.21.3',
+  '1.21.1',
+  '1.20.6',
+  '1.20.4',
+  '1.20.2',
+  '1.20.1',
+  '1.19.4',
+  '1.19.2',
+  '1.19'
+];
 
 const STATE_LABEL: Record<BotSessionSnapshot['state'], string> = {
   idle: 'Idle',

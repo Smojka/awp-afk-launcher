@@ -501,6 +501,35 @@ describe('BotManager', () => {
     expect(state.sessions[profile.id].lastError).toBe('Rate limit: wait before reconnecting');
   });
 
+  it('clears the sticky error and recovers system health once the bot spawns again', async () => {
+    const fakeBot = new FakeBot();
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+
+    // An earlier kick leaves a sticky error: the footer's System pill goes "degraded"
+    // and the Status pill shows the kick reason.
+    fakeBot.emit('kicked', 'Disconnected');
+    let state = manager.getState();
+    expect(state.sessions[profile.id].lastError).toBe('Disconnected');
+    expect(state.runtime.systemState).toBe('degraded');
+    expect(state.runtime.latestError).toBe('Disconnected');
+
+    // Reconnecting and reaching the world must reset that stale error so the UI
+    // reflects the healthy connection instead of staying stuck on the old failure.
+    fakeBot.emit('spawn');
+    state = manager.getState();
+    expect(state.sessions[profile.id].lastError).toBeNull();
+    expect(state.runtime.systemState).toBe('online');
+    expect(state.runtime.latestError).toBeNull();
+  });
+
   it('accepts mandatory server resource packs before world spawn can continue', async () => {
     const fakeBot = new FakeBot();
     const manager = new BotManager({

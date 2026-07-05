@@ -1109,6 +1109,11 @@ export class BotManager extends EventEmitter {
       session.snapshot.connectedAt = new Date().toISOString();
       session.snapshot.reconnectAttempts = 0;
       session.snapshot.nextReconnectAt = null;
+      // We're back in the world: the previous drop/kick is resolved, so clear the
+      // sticky error. Without this, lastError (set on every kick/connection failure but
+      // never reset on success) keeps the footer's System pill stuck on "degraded" and
+      // the Status pill showing a stale reason like "Disconnected" even while online.
+      session.snapshot.lastError = null;
       if (!session.snapshot.startupActive) {
         this.updateStatus(session, 'online', 'Online');
       }
