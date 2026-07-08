@@ -29,6 +29,16 @@ jobs:
           cat > release-notes.md <<'NOTES'
           ChunkKeeper release build.
 
+          ### Yenilikler (v0.4.3)
+          - **Daha hızlı bağlanma:** join flow artık kör sabit beklemeler yerine sunucu sinyaline
+            göre ilerliyor (opsiyonel lobby-ready / auth-success desenleri); ağır modüller önden
+            yüklenip ilk bağlantı hızlandı.
+          - **Daha hızlı inşa:** işlem kuyruğu gecikmeyi toplamsal değil minimum aralık olarak
+            uyguluyor ve kazı onayı olay-tabanlı — çiftlik kurulumu belirgin hızlandı.
+          - **Kayıtlı şifreler (güvenli):** sunucu ve proxy şifreleri artık işletim sistemi
+            anahtarlığıyla şifrelenip kalıcı saklanıyor; uygulama kapansa da gitmiyor. Şifreler
+            arayüze/web paneline düz metin gönderilmiyor, yalnızca bağlanma anında çözülüyor.
+
           ### Included artifacts
           - ChunkKeeper native macOS ARM64 DMG
           - ChunkKeeper native Windows x64 NSIS installer

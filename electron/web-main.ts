@@ -56,6 +56,7 @@ app.whenReady().then(async () => {
 
   manager = createManager();
   await manager.load();
+  void manager.prewarm();
 
   try {
     localWebServer = await startBrowserDashboard();

@@ -144,6 +144,10 @@ function createHttpLauncherApi(baseUrl: string): LauncherApi {
         method: 'PATCH',
         body: JSON.stringify(patch)
       }),
+    secretAvailable: async () => {
+      const result = await request<{ available: boolean }>('/api/secret-available');
+      return result.available;
+    },
     openUserData: async () => {
       await request<{ ok: boolean }>('/api/open-user-data', { method: 'POST' });
     },

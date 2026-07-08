@@ -42,6 +42,7 @@ const api: LauncherApi = {
     ipcRenderer.invoke('bot:configureDiscord', profileId, input) as Promise<LauncherState>,
   updateSettings: (patch: Partial<AppSettings>) =>
     ipcRenderer.invoke('app:updateSettings', patch) as Promise<LauncherState>,
+  secretAvailable: () => ipcRenderer.invoke('secret:isAvailable') as Promise<boolean>,
   openUserData: () => ipcRenderer.invoke('app:openUserData') as Promise<void>,
   minimizeWindow: () => ipcRenderer.invoke('window:minimize') as Promise<void>,
   toggleMaximizeWindow: () => ipcRenderer.invoke('window:toggleMaximize') as Promise<boolean>,

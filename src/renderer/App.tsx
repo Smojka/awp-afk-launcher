@@ -70,6 +70,9 @@ import type {
 
 type DraftProfile = AccountProfile;
 
+/** Which redacted secrets the user actually edited this save, so unchanged ones keep their stored value. */
+type SecretsChanged = { auth?: boolean; proxy?: boolean };
+
 const APP_NAME = 'ChunkKeeper';
 const APP_TAGLINE = 'Minecraft AFK command desk';
 const DEVELOPER_CREDIT = 'Developed by smojka';
@@ -433,10 +436,10 @@ export function App({ api }: { api?: LauncherApi } = {}) {
     }
   }
 
-  async function saveProfileDraft(profile = draft) {
+  async function saveProfileDraft(profile = draft, secretsChanged?: SecretsChanged) {
     if (!profile) return;
     setDraft(profile);
-    await run(() => apiClient!.saveProfile(normalizeDraft(profile)));
+    await run(() => apiClient!.saveProfile(normalizeDraft(profile, secretsChanged)));
   }
 
   async function stopAll() {
@@ -862,8 +865,8 @@ export function App({ api }: { api?: LauncherApi } = {}) {
         <ProfileEditorModal
           draft={draft}
           onClose={() => setProfileEditorOpen(false)}
-          onSave={async (profile) => {
-            await saveProfileDraft(profile);
+          onSave={async (profile, secretsChanged) => {
+            await saveProfileDraft(profile, secretsChanged);
             setProfileEditorOpen(false);
           }}
         />
@@ -1275,17 +1278,23 @@ function ProfileEditorModal({
   onClose
 }: {
   draft: DraftProfile;
-  onSave: (profile: DraftProfile) => Promise<void> | void;
+  onSave: (profile: DraftProfile, secretsChanged: SecretsChanged) => Promise<void> | void;
   onClose: () => void;
 }) {
   const [workingDraft, setWorkingDraft] = useState<DraftProfile>(() => structuredClone(draft));
   // Edit the port as raw text so it can be cleared mid-edit; it is coerced to a number
   // in the draft (0 when blank) and normalized to the default port at save time.
   const [portText, setPortText] = useState<string>(() => String(draft.port));
+  // The redacted state never carries the stored plaintext, so a password is only sent to the
+  // main process when the user actually edits it here (otherwise the encrypted value is kept).
+  const [authPwDirty, setAuthPwDirty] = useState(false);
+  const [proxyPwDirty, setProxyPwDirty] = useState(false);
 
   useEffect(() => {
     setWorkingDraft(structuredClone(draft));
     setPortText(String(draft.port));
+    setAuthPwDirty(false);
+    setProxyPwDirty(false);
   }, [draft.id, draft.label]);
 
   useEffect(() => {
@@ -1414,7 +1423,7 @@ function ProfileEditorModal({
             <div className="toggles">
               <Toggle
                 label="Use proxy for this bot"
-                help="Bu profil bağlanırken kendi proxy socket'ini kullanır. Proxy password diske yazılmaz."
+                help="Bu profil bağlanırken kendi proxy socket'ini kullanır. Proxy password işletim sistemi anahtarlığıyla şifrelenip kaydedilir."
                 checked={profileProxy(workingDraft).enabled}
                 onChange={(value) => updateProxy({ enabled: value })}
               />
@@ -1441,13 +1450,38 @@ function ProfileEditorModal({
                 onChange={(value) => updateProxy({ port: Number(value) || 0 })}
               />
               <Field label="Proxy username" value={profileProxy(workingDraft).username} onChange={(value) => updateProxy({ username: value })} />
-              <Field
-                label="Proxy password"
-                value={profileProxy(workingDraft).password}
-                type="password"
-                autoComplete="current-password"
-                onChange={(value) => updateProxy({ password: value })}
-              />
+              <label className="field">
+                <span className="field__label">
+                  Proxy password
+                  {workingDraft.hasProxyPassword && !proxyPwDirty ? <em className="field__suffix">kayıtlı · şifreli</em> : null}
+                </span>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  value={profileProxy(workingDraft).password}
+                  placeholder={
+                    workingDraft.hasProxyPassword && !proxyPwDirty ? 'Kayıtlı — değiştirmek için yeni şifre yazın' : undefined
+                  }
+                  onChange={(event) => {
+                    setProxyPwDirty(true);
+                    updateProxy({ password: event.target.value });
+                  }}
+                />
+                {workingDraft.hasProxyPassword && !proxyPwDirty ? (
+                  <button
+                    type="button"
+                    className="btn btn--ghost btn--sm"
+                    onClick={() => {
+                      setProxyPwDirty(true);
+                      updateProxy({ password: '' });
+                    }}
+                  >
+                    Kayıtlı şifreyi sil
+                  </button>
+                ) : null}
+              </label>
             </div>
           </section>
 
@@ -1455,7 +1489,7 @@ function ProfileEditorModal({
             <div className="profile-editor__section-head">
               <span className="overline">Join flow</span>
             </div>
-            <StartupFlowPanel draft={workingDraft} onChange={setWorkingDraft} />
+            <StartupFlowPanel draft={workingDraft} onChange={setWorkingDraft} onSecretEdit={() => setAuthPwDirty(true)} />
           </section>
 
           <section className="profile-editor__section">
@@ -1504,8 +1538,11 @@ function ProfileEditorModal({
               Close
             </button>
           </ActionWithHelp>
-          <ActionWithHelp help="Profil ayarlarını kaydeder. Auth password sadece çalışma sırasında kullanılır, profil JSON içine yazılmaz.">
-            <button className="btn btn--primary" onClick={() => onSave(workingDraft)}>
+          <ActionWithHelp help="Profil ayarlarını kaydeder. Auth password işletim sistemi anahtarlığıyla şifrelenip kaydedilir; profil JSON'una düz metin yazılmaz ve arayüze geri gönderilmez.">
+            <button
+              className="btn btn--primary"
+              onClick={() => onSave(workingDraft, { auth: authPwDirty, proxy: proxyPwDirty })}
+            >
               <Save size={14} />
               Save profile
             </button>
@@ -3399,10 +3436,25 @@ function Kv({ k, v, tone }: { k: string; v: string; tone?: 'ok' | 'danger' }) {
   );
 }
 
-function StartupFlowPanel({ draft, onChange }: { draft: DraftProfile; onChange: (profile: DraftProfile) => void }) {
+function StartupFlowPanel({
+  draft,
+  onChange,
+  onSecretEdit
+}: {
+  draft: DraftProfile;
+  onChange: (profile: DraftProfile) => void;
+  onSecretEdit?: () => void;
+}) {
   const startup = draft.startup;
+  const [authEdited, setAuthEdited] = useState(false);
+  const authSaved = Boolean(draft.hasAuthPassword) && !authEdited;
   const updateStartup = (patch: Partial<DraftProfile['startup']>) =>
     onChange({ ...draft, startup: { ...startup, ...patch } });
+  const editAuthPassword = (value: string) => {
+    if (!authEdited) setAuthEdited(true);
+    onSecretEdit?.();
+    updateStartup({ authPassword: value });
+  };
 
   return (
     <form className="joinflow" onSubmit={(event) => event.preventDefault()}>
@@ -3440,13 +3492,27 @@ function StartupFlowPanel({ draft, onChange }: { draft: DraftProfile; onChange: 
           mono
           onChange={(value) => updateStartup({ registerCommandTemplate: value })}
         />
-        <Field
-          label="Auth password"
-          value={startup.authPassword}
-          type="password"
-          autoComplete="current-password"
-          onChange={(value) => updateStartup({ authPassword: value })}
-        />
+        <label className="field">
+          <span className="field__label">
+            Auth password
+            {authSaved ? <em className="field__suffix">kayıtlı · şifreli</em> : null}
+          </span>
+          <input
+            className="mono"
+            type="password"
+            autoComplete="new-password"
+            autoCapitalize="none"
+            spellCheck={false}
+            value={startup.authPassword}
+            placeholder={authSaved ? 'Kayıtlı — değiştirmek için yeni şifre yazın' : undefined}
+            onChange={(event) => editAuthPassword(event.target.value)}
+          />
+          {authSaved ? (
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => editAuthPassword('')}>
+              Kayıtlı şifreyi sil
+            </button>
+          ) : null}
+        </label>
         <Field
           label="Transfer command"
           value={startup.transferCommand}
@@ -3469,6 +3535,40 @@ function StartupFlowPanel({ draft, onChange }: { draft: DraftProfile; onChange: 
           inputMode="numeric"
           onChange={(value) => updateStartup({ transferDelayMs: Number(value) || 0 })}
         />
+        <label className="field field--wide">
+          <span className="field__label">
+            Lobby-ready patterns
+            <em className="field__suffix">opsiyonel · auth gecikmesini hızlandırır</em>
+          </span>
+          <textarea
+            className="mono"
+            value={(startup.readyPatterns ?? []).join('\n')}
+            onChange={(event) =>
+              updateStartup({
+                readyPatterns: event.target.value.split('\n').map((line) => line.trim()).filter(Boolean)
+              })
+            }
+            rows={2}
+            placeholder="Her satıra bir regex — bu chat satırı görülünce auth komutu beklemeden gönderilir (örn. lütfen.*giriş)"
+          />
+        </label>
+        <label className="field field--wide">
+          <span className="field__label">
+            Auth-success patterns
+            <em className="field__suffix">opsiyonel · transfer gecikmesini hızlandırır</em>
+          </span>
+          <textarea
+            className="mono"
+            value={(startup.authSuccessPatterns ?? []).join('\n')}
+            onChange={(event) =>
+              updateStartup({
+                authSuccessPatterns: event.target.value.split('\n').map((line) => line.trim()).filter(Boolean)
+              })
+            }
+            rows={2}
+            placeholder="Her satıra bir regex — giriş başarılı mesajı görülünce transfer/flow beklemeden ilerler (örn. giriş başarılı|logged in)"
+          />
+        </label>
         <div className="field field--wide">
           <span className="field__label">Flow commands</span>
           <ScriptStepList
@@ -3492,6 +3592,7 @@ function Field({
   autoComplete,
   mono,
   suffix,
+  placeholder,
   onChange
 }: {
   label: string;
@@ -3501,6 +3602,7 @@ function Field({
   autoComplete?: string;
   mono?: boolean;
   suffix?: string;
+  placeholder?: string;
   onChange: (value: string) => void;
 }) {
   return (
@@ -3515,6 +3617,7 @@ function Field({
         type={type}
         inputMode={inputMode}
         autoComplete={autoComplete}
+        placeholder={placeholder}
         autoCapitalize="none"
         spellCheck={false}
         onChange={(event) => onChange(event.target.value)}
@@ -3949,11 +4052,15 @@ function createNewAccountDraft(template: DraftProfile, settings: AppSettings, ac
   };
 }
 
-function normalizeDraft(draft: DraftProfile): SaveProfileInput {
+function normalizeDraft(draft: DraftProfile, secretsChanged?: SecretsChanged): SaveProfileInput {
   const eatAtFood = clamp(Number(draft.routine.eatAtFood), 1, 19, 14);
   const pauseAtFood = Math.min(eatAtFood, clamp(Number(draft.routine.pauseAtFood), 0, 19, 6));
   return {
     ...draft,
+    // Only replace a stored secret when the user edited it; otherwise the main process keeps
+    // the encrypted value it already has (the redacted '' echoed here must not overwrite it).
+    authPasswordChanged: secretsChanged?.auth ?? false,
+    proxyPasswordChanged: secretsChanged?.proxy ?? false,
     label: draft.label.trim(),
     username: draft.username.trim(),
     host: draft.host.trim(),

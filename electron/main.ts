@@ -235,6 +235,7 @@ function registerIpc(): void {
     getManager().configureDiscord(profileId, input)
   );
   ipcMain.handle('app:updateSettings', async (_event, patch: Partial<AppSettings>) => getManager().updateSettings(patch));
+  ipcMain.handle('secret:isAvailable', async () => getManager().secretAvailable());
   ipcMain.handle('app:openUserData', async () => {
     await shell.openPath(launcherUserDataDir());
   });
@@ -283,6 +284,9 @@ if (!hasSingleInstanceLock) {
     updateService = createUpdateService();
     registerIpc();
     await manager.load();
+    // Warm the heavy mineflayer/pathfinder imports off the critical path so the first connect
+    // doesn't pay their module-load latency.
+    void manager.prewarm();
     minimizeToTrayOnClose = manager.getState().settings.minimizeToTrayOnClose;
     await createWindow();
     reconcileTray();

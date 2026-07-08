@@ -30,6 +30,7 @@ function createTestApi(): LauncherApi {
 
   return {
     platform: 'win32',
+    secretAvailable: async () => true,
     getState: async () => structuredClone(state),
     saveProfile: async (profile: SaveProfileInput) => {
       const id = profile.id || `session-${Date.now().toString(36)}`;

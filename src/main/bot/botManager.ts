@@ -42,8 +42,44 @@ import {
 import { AfkRoutine, type RoutineBot } from './afkRoutine.js';
 import { createDefaultProfiles, defaultStorage } from './defaultProfiles.js';
 import { ProfileStore } from '../storage/profileStore.js';
+// Type-only import + the electron-free key helpers keep `electron` (which safeStorage's module
+// pulls in) OUT of botManager's static graph; the real vault is loaded via dynamic import.
+import type { SecretVault } from '../storage/secretVault.js';
+import { authSecretKey, proxySecretKey } from '../storage/secretKeys.js';
 
 type ProfilePersistence = Pick<ProfileStore, 'load' | 'save'>;
+
+/** The subset of SecretVault botManager depends on (injectable for tests). */
+export type SecretPersistence = Pick<SecretVault, 'isAvailable' | 'get' | 'set' | 'delete' | 'has' | 'prune'>;
+
+/** No-op vault used when safeStorage is unavailable (e.g. under tests): secrets stay in memory only. */
+class NullSecretVault implements SecretPersistence {
+  isAvailable(): boolean {
+    return false;
+  }
+  async get(): Promise<string | null> {
+    return null;
+  }
+  async set(): Promise<boolean> {
+    return false;
+  }
+  async delete(): Promise<void> {}
+  async has(): Promise<boolean> {
+    return false;
+  }
+  async prune(): Promise<void> {}
+}
+
+/** Load the real safeStorage-backed vault, degrading to a no-op if `electron` can't be resolved. */
+async function createSecretVault(baseDir: string): Promise<SecretPersistence> {
+  try {
+    const module = await import('../storage/secretVault.js');
+    return new module.SecretVault(baseDir);
+  } catch (error) {
+    console.warn('[secret] safeStorage vault unavailable; passwords will not persist:', error);
+    return new NullSecretVault();
+  }
+}
 
 type MineflayerOptions = {
   host: string;
@@ -185,6 +221,8 @@ interface ManagedSession {
   desiredStop: boolean;
   reconnectTimer: NodeJS.Timeout | null;
   startupTimers: NodeJS.Timeout[];
+  /** Teardowns for any pending join-flow signal listeners (chat/spawn), cleared alongside timers. */
+  startupCancels: Array<() => void>;
   startupCompleted: boolean;
   foodGuardActive: boolean;
   hungerPaused: boolean;
@@ -265,6 +303,10 @@ const MAX_EVENTS = 32;
 const MAX_CHAT = 64;
 const FOOD_WARNING_INTERVAL_MS = 30000;
 const DEFAULT_OPERATION_DELAY_MS = 550;
+// The per-item operation delay is a MINIMUM spacing, not an additive pause: the walk/place/dig
+// work already elapsed during a tick counts toward it, so a slow (walking) cell doesn't then also
+// sleep the full delay. This floor still yields to the event loop between items.
+const MIN_OPERATION_GAP_MS = 40;
 const MAX_OPERATION_VOLUME = 4096;
 // Largest crop-farm half-extent (33x33 field). Well under MAX_OPERATION_VOLUME.
 const MAX_CROP_RADIUS = 16;
@@ -453,6 +495,7 @@ export class BotManager extends EventEmitter {
   private settings: AppSettings = cloneSettings(DEFAULT_SETTINGS);
   private webDashboardUrl: string | null = null;
   private loaded = false;
+  private vault: SecretPersistence = new NullSecretVault();
 
   constructor(
     private readonly options: {
@@ -461,6 +504,7 @@ export class BotManager extends EventEmitter {
       authSessionDir?: string;
       factory?: MineflayerFactory;
       store?: ProfilePersistence;
+      secretVault?: SecretPersistence;
     }
   ) {
     super();
@@ -477,12 +521,26 @@ export class BotManager extends EventEmitter {
     this.profiles = document.profiles.map(normalizeProfile);
     this.selectedProfileId = document.selectedProfileId ?? this.profiles[0]?.id ?? null;
     this.settings = normalizeSettings(document.settings);
+    // profiles.json is written secret-free; rehydrate the decrypted passwords into the in-memory
+    // profiles (the runtime source of truth used at connect time) from the encrypted vault.
+    this.vault = this.options.secretVault ?? (await createSecretVault(this.options.userDataDir));
+    await this.rehydrateSecrets();
     this.rebuildSessions();
     this.loaded = true;
     this.emitState();
     if (this.settings.autoStartOnLaunch) {
       void this.startAll();
     }
+  }
+
+  /**
+   * Warm the heavy `mineflayer` / `mineflayer-pathfinder` dynamic imports ahead of time so the
+   * first real connect doesn't pay their module-load latency on the critical path. Safe to call
+   * repeatedly (Node caches modules) and to ignore failures — it's a pure optimization.
+   */
+  async prewarm(): Promise<void> {
+    if (this.options.factory) return; // injected factory (tests) doesn't use these modules
+    await Promise.allSettled([import('mineflayer'), import('mineflayer-pathfinder')]);
   }
 
   getState(): LauncherState {
@@ -492,7 +550,7 @@ export class BotManager extends EventEmitter {
       sessions[session.profile.id] = this.cloneSnapshot(session.snapshot);
     }
     return {
-      profiles: this.profiles.map(cloneProfile),
+      profiles: this.profiles.map(redactProfileForBroadcast),
       sessions,
       runtime: this.runtimeSnapshot(),
       settings: cloneSettings(this.settings),
@@ -535,6 +593,18 @@ export class BotManager extends EventEmitter {
     });
 
     const existing = this.profiles.findIndex((item) => item.id === id);
+    const prior = existing >= 0 ? this.profiles[existing] : undefined;
+    // The renderer never receives stored plaintext, so when it explicitly signals "unchanged"
+    // (`authPasswordChanged === false`) we KEEP the prior secret instead of overwriting it with
+    // the redacted '' it echoed back. An unset flag preserves the legacy "use the given value"
+    // behaviour so non-renderer callers (and tests) still set passwords directly.
+    if (input.authPasswordChanged === false) {
+      profile.startup.authPassword = prior?.startup.authPassword ?? '';
+    }
+    if (profile.proxy && input.proxyPasswordChanged === false) {
+      profile.proxy.password = prior?.proxy?.password ?? '';
+    }
+
     if (existing >= 0) {
       this.profiles[existing] = profile;
     } else {
@@ -543,6 +613,7 @@ export class BotManager extends EventEmitter {
     this.selectedProfileId = profile.id;
     this.rebuildSessions();
     this.applySavedRoutineToRunningSession(this.sessions.get(profile.id));
+    await this.writeProfileSecrets(profile);
     await this.persist();
     this.emitState();
     return this.getState();
@@ -554,6 +625,8 @@ export class BotManager extends EventEmitter {
     this.profiles = this.profiles.filter((profile) => profile.id !== profileId);
     this.selectedProfileId = this.selectedProfileId === profileId ? this.profiles[0]?.id ?? null : this.selectedProfileId;
     this.sessions.delete(profileId);
+    await this.vault.delete(authSecretKey(profileId));
+    await this.vault.delete(proxySecretKey(profileId));
     await this.persist();
     this.emitState();
     return this.getState();
@@ -1021,6 +1094,30 @@ export class BotManager extends EventEmitter {
     });
   }
 
+  /** Whether OS-backed secret encryption is available (drives the renderer's warning). */
+  secretAvailable(): boolean {
+    return this.vault.isAvailable();
+  }
+
+  /** Fill the in-memory profiles' blank secret fields from the encrypted vault after load. */
+  private async rehydrateSecrets(): Promise<void> {
+    for (const profile of this.profiles) {
+      const auth = await this.vault.get(authSecretKey(profile.id));
+      if (auth) profile.startup.authPassword = auth;
+      const proxyPassword = await this.vault.get(proxySecretKey(profile.id));
+      if (proxyPassword && profile.proxy) profile.proxy.password = proxyPassword;
+    }
+    // Drop ciphertext left behind by profiles deleted while the vault was unavailable.
+    const liveKeys = this.profiles.flatMap((profile) => [authSecretKey(profile.id), proxySecretKey(profile.id)]);
+    await this.vault.prune(liveKeys);
+  }
+
+  /** Encrypt+persist a profile's two secrets. Empty clears the stored key. */
+  private async writeProfileSecrets(profile: AccountProfile): Promise<void> {
+    await this.vault.set(authSecretKey(profile.id), profile.startup.authPassword ?? '');
+    await this.vault.set(proxySecretKey(profile.id), profile.proxy?.password ?? '');
+  }
+
   private rebuildSessions(): void {
     for (const profile of this.profiles) {
       const existing = this.sessions.get(profile.id);
@@ -1047,6 +1144,7 @@ export class BotManager extends EventEmitter {
         desiredStop: true,
         reconnectTimer: null,
         startupTimers: [],
+        startupCancels: [],
         startupCompleted: false,
         foodGuardActive: false,
         hungerPaused: false,
@@ -1404,56 +1502,115 @@ export class BotManager extends EventEmitter {
     this.updateStatus(session, 'online', 'Running join flow');
     this.pushEvent(session, 'system', 'info', 'Join flow started', describeStartupFlow(startup));
 
-    let elapsed = Math.max(0, startup.authDelayMs);
-    if (hasAuthCommand) {
-      session.startupTimers.push(
-        setTimeout(() => {
-          if (session.bot !== bot || session.desiredStop) return;
-          bot.chat?.(authCommand);
-          this.pushEvent(session, 'chat', 'info', authLabel, redactCommand(authCommand, startup.authPassword));
-          this.emitState();
-        }, elapsed)
-      );
-    } else if (authRequiresPassword(startup) && !startup.authPassword) {
+    if (!hasAuthCommand && authRequiresPassword(startup) && !startup.authPassword) {
       this.pushEvent(session, 'system', 'warn', 'Lobby auth skipped', 'Password is empty');
     }
 
-    elapsed += Math.max(0, startup.transferDelayMs);
-    if (hasTransferCommand) {
-      session.startupTimers.push(
-        setTimeout(() => {
-          if (session.bot !== bot || session.desiredStop) return;
-          bot.chat?.(transferCommand);
-          this.pushEvent(session, 'chat', 'info', 'Server transfer sent', transferCommand);
-          this.emitState();
-        }, elapsed)
-      );
-    }
+    // The flow is a chain of gated steps. Each gate resolves on its configured server signal
+    // (readyPatterns / authSuccessPatterns) OR its delay cap, whichever comes first — so with
+    // signals configured the join is as fast as the server responds, and with none it falls back
+    // to exactly the old fixed-delay cadence (same total wall-clock, same step order). Built
+    // back-to-front so every step schedules the next one from its own tail.
+    const finish = (): void => {
+      this.pushEvent(session, 'system', 'ok', 'Join flow complete');
+      this.updateStatus(session, 'online', 'Online');
+      this.startRoutine(session, bot);
+      this.emitState();
+    };
 
-    for (const step of flowCommands) {
-      elapsed += Math.max(0, step.delayMs);
-      session.startupTimers.push(
-        setTimeout(() => {
-          if (session.bot !== bot || session.desiredStop) return;
+    let next: () => void = () => this.scheduleStartupStep(session, bot, { capMs: 500 }, finish);
+
+    for (let index = flowCommands.length - 1; index >= 0; index--) {
+      const step = flowCommands[index];
+      const after = next;
+      next = () =>
+        this.scheduleStartupStep(session, bot, { capMs: step.delayMs }, () => {
           bot.chat?.(step.command);
           this.pushEvent(session, 'chat', 'info', step.label || 'Flow command sent', redactSensitiveText(step.command));
           this.emitState();
-        }, elapsed)
-      );
+          after();
+        });
     }
 
-    session.startupTimers.push(
-      setTimeout(() => {
-        if (session.bot !== bot || session.desiredStop) return;
-        this.pushEvent(session, 'system', 'ok', 'Join flow complete');
-        this.updateStatus(session, 'online', 'Online');
-        this.startRoutine(session, bot);
-        this.emitState();
-      }, elapsed + 500)
-    );
+    // Transfer gate — always waited (even with no transfer command) to preserve prior timing;
+    // resolves early on an auth-success signal.
+    const afterTransfer = next;
+    next = () =>
+      this.scheduleStartupStep(
+        session,
+        bot,
+        { capMs: startup.transferDelayMs, patterns: startup.authSuccessPatterns },
+        () => {
+          if (hasTransferCommand) {
+            bot.chat?.(transferCommand);
+            this.pushEvent(session, 'chat', 'info', 'Server transfer sent', transferCommand);
+            this.emitState();
+          }
+          afterTransfer();
+        }
+      );
+
+    // Auth gate — resolves early on a lobby-ready signal.
+    const afterAuth = next;
+    next = () =>
+      this.scheduleStartupStep(
+        session,
+        bot,
+        { capMs: startup.authDelayMs, patterns: startup.readyPatterns },
+        () => {
+          if (hasAuthCommand) {
+            bot.chat?.(authCommand);
+            this.pushEvent(session, 'chat', 'info', authLabel, redactCommand(authCommand, startup.authPassword));
+            this.emitState();
+          }
+          afterAuth();
+        }
+      );
+
+    next();
+  }
+
+  /**
+   * Run one join-flow step after its gate opens: either a matching server chat line (`patterns`)
+   * or `capMs` elapses, whichever is first. Registers its timer/listener teardown so
+   * {@link clearStartupFlow} can abort a pending step on disconnect/rebind.
+   */
+  private scheduleStartupStep(
+    session: ManagedSession,
+    bot: BotLike,
+    gate: { capMs: number; patterns?: string[] },
+    action: () => void
+  ): void {
+    if (session.bot !== bot || session.desiredStop) return;
+    const patterns = compileStartupPatterns(gate.patterns);
+    let settled = false;
+    const teardown = (): void => {
+      clearTimeout(timer);
+      if (patterns.length) bot.off('messagestr', onMessage);
+      const index = session.startupCancels.indexOf(teardown);
+      if (index >= 0) session.startupCancels.splice(index, 1);
+    };
+    const fire = (): void => {
+      if (settled) return;
+      settled = true;
+      teardown();
+      if (session.bot !== bot || session.desiredStop) return;
+      action();
+    };
+    const onMessage = (text: unknown): void => {
+      if (typeof text === 'string' && patterns.some((pattern) => pattern.test(text))) fire();
+    };
+    const timer = setTimeout(fire, Math.max(0, gate.capMs));
+    session.startupTimers.push(timer);
+    session.startupCancels.push(teardown);
+    if (patterns.length) bot.on('messagestr', onMessage);
   }
 
   private clearStartupFlow(session: ManagedSession): void {
+    for (const cancel of [...session.startupCancels]) {
+      cancel();
+    }
+    session.startupCancels = [];
     for (const timer of session.startupTimers) {
       clearTimeout(timer);
     }
@@ -1929,9 +2086,13 @@ export class BotManager extends EventEmitter {
     session.operationPass.set(kind, { pass: 1, progressed: 0, zeroStreak: 0 });
     const tick = () => {
       if (session.bot !== bot || session.snapshot.operations[kind].state !== 'running') return;
+      const tickStart = Date.now();
       const reschedule = () => {
         if (session.bot === bot && session.snapshot.operations[kind].state === 'running') {
-          session.operationTimers.set(kind, setTimeout(tick, delayMs));
+          // Deficit timing: subtract the work already spent this tick so `delayMs` is a minimum
+          // inter-action spacing rather than an additive pause on top of walk/place time.
+          const wait = Math.max(MIN_OPERATION_GAP_MS, delayMs - (Date.now() - tickStart));
+          session.operationTimers.set(kind, setTimeout(tick, wait));
         }
       };
       void (async () => {
@@ -2189,8 +2350,9 @@ export class BotManager extends EventEmitter {
         // the server rejected the break (reach/line-of-sight validation) it resends the
         // real block a tick later. Trusting the optimistic clear poisons the client world —
         // observed live: a bot "dug" a 789-block room that mostly never existed server-side
-        // and then walked down a phantom staircase. Wait for the correction and verify.
-        await new Promise((resolve) => setTimeout(resolve, 150));
+        // and then walked down a phantom staircase. Wait for the correction and verify — but
+        // resolve as soon as the server (re)sends this block instead of always burning 150ms.
+        await waitForBlockChange(bot, work.position, 150);
         const after = bot.blockAt(toVec3(work.position));
         if (after && !isAirBlock(after)) {
           this.recordWorkFailure(session, kind, work, `dig at ${formatPosition(work.position)} rejected by server`, startedAt);
@@ -3772,6 +3934,31 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Resolve when the server (re)sends a block at `position` (mineflayer's `blockUpdate`) or after
+ * `capMs`, whichever comes first. Used after a dig so a server rejection is caught as soon as the
+ * corrected block arrives on a responsive server, while a genuine success still waits the cap
+ * (there's no positive "confirmed" packet to key off of).
+ */
+function waitForBlockChange(bot: BotLike, position: PositionSnapshot, capMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      bot.off('blockUpdate', onUpdate);
+      resolve();
+    };
+    const onUpdate = (_oldBlock: unknown, newBlock: { position?: { x: number; y: number; z: number } } | null): void => {
+      const point = newBlock?.position;
+      if (point && point.x === position.x && point.y === position.y && point.z === position.z) finish();
+    };
+    const timer = setTimeout(finish, capMs);
+    bot.on('blockUpdate', onUpdate);
+  });
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
@@ -3947,6 +4134,21 @@ function cloneProfile(profile: AccountProfile): AccountProfile {
     modules: cloneModules(profile.modules ?? normalizeModules()),
     storage: cloneStorage(profile.storage ?? defaultStorage())
   };
+}
+
+/**
+ * Profile shape sent to the renderer / web dashboard: identical to a clone but with the two
+ * secrets blanked and replaced by `has*Password` booleans. This is what closes the cleartext
+ * leak in the broadcast state — plaintext passwords only ever live in the in-memory profiles and
+ * are read directly at connect time, never round-tripped through `getState()`.
+ */
+function redactProfileForBroadcast(profile: AccountProfile): AccountProfile {
+  const clone = cloneProfile(profile);
+  clone.hasAuthPassword = Boolean(profile.startup.authPassword);
+  clone.hasProxyPassword = Boolean(profile.proxy?.password);
+  clone.startup.authPassword = '';
+  if (clone.proxy) clone.proxy.password = '';
+  return clone;
 }
 
 function cloneStorage(storage: StorageConfig): StorageConfig {
@@ -4240,13 +4442,38 @@ function normalizeStartup(startup?: Partial<StartupFlowConfig>): StartupFlowConf
     authDelayMs: Math.max(0, Number(startup?.authDelayMs) || 2500),
     transferCommand: startup?.transferCommand?.trim() || '/smp',
     transferDelayMs: Math.max(0, Number(startup?.transferDelayMs) || 3500),
-    flowCommands: normalizeScriptSteps(startup?.flowCommands, [])
+    flowCommands: normalizeScriptSteps(startup?.flowCommands, []),
+    readyPatterns: normalizeStringList(startup?.readyPatterns),
+    authSuccessPatterns: normalizeStringList(startup?.authSuccessPatterns)
   };
+}
+
+/** Trim + drop blanks from an optional string list; undefined when nothing remains. */
+function normalizeStringList(values?: string[]): string[] | undefined {
+  if (!Array.isArray(values)) return undefined;
+  const cleaned = values.map((value) => (typeof value === 'string' ? value.trim() : '')).filter(Boolean);
+  return cleaned.length ? cleaned : undefined;
 }
 
 function normalizeLobbyAuthMode(value?: string): LobbyAuthMode {
   if (value === 'none' || value === 'login' || value === 'register' || value === 'custom') return value;
   return 'login';
+}
+
+/** Compile optional join-flow signal patterns to case-insensitive regexes, skipping blanks/invalid ones. */
+function compileStartupPatterns(patterns?: string[]): RegExp[] {
+  if (!patterns?.length) return [];
+  const compiled: RegExp[] = [];
+  for (const raw of patterns) {
+    const source = raw.trim();
+    if (!source) continue;
+    try {
+      compiled.push(new RegExp(source, 'i'));
+    } catch {
+      // Ignore malformed patterns rather than aborting the whole join flow.
+    }
+  }
+  return compiled;
 }
 
 function renderAuthCommand(startup: StartupFlowConfig): string {

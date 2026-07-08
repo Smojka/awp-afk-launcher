@@ -40,6 +40,19 @@ export interface StartupFlowConfig {
   transferCommand: string;
   transferDelayMs: number;
   flowCommands: ScriptStep[];
+  /**
+   * Optional chat/system-message patterns (regex sources, case-insensitive) that signal the
+   * lobby is ready for the auth command. When one matches, the auth command fires immediately
+   * instead of waiting the full `authDelayMs`; the delay is only an upper bound. Empty = the
+   * old fixed-delay behaviour.
+   */
+  readyPatterns?: string[];
+  /**
+   * Optional patterns that signal auth succeeded (e.g. "logged in", "giriş başarılı"). When one
+   * matches, the transfer/flow steps advance immediately instead of waiting `transferDelayMs`.
+   * Empty = fixed-delay behaviour.
+   */
+  authSuccessPatterns?: string[];
 }
 
 export interface AfkRoutineConfig {
@@ -245,6 +258,14 @@ export interface AccountProfile {
   modules?: BotModulesConfig;
   /** Shared chest storage for deposit/restock, referenced by all farm operations. */
   storage?: StorageConfig;
+  /**
+   * Derived, broadcast-only flag: an encrypted auth password is stored for this profile.
+   * The plaintext `startup.authPassword` is redacted out of broadcast state, so the UI reads
+   * this to show a "saved" indicator. Never written to disk.
+   */
+  hasAuthPassword?: boolean;
+  /** Derived, broadcast-only flag: an encrypted proxy password is stored. Never persisted. */
+  hasProxyPassword?: boolean;
 }
 
 export interface PositionSnapshot {
@@ -416,6 +437,14 @@ export interface LauncherState {
 
 export interface SaveProfileInput extends Omit<AccountProfile, 'id'> {
   id?: string;
+  /**
+   * When true, `startup.authPassword` in this input replaces the stored secret (including ''
+   * to clear it). When false/omitted, the existing encrypted auth password is kept — the
+   * renderer never receives the plaintext, so it can't round-trip it on an unrelated save.
+   */
+  authPasswordChanged?: boolean;
+  /** When true, `proxy.password` replaces the stored proxy secret; otherwise it is kept. */
+  proxyPasswordChanged?: boolean;
 }
 
 export interface OperationStartRequest {
@@ -483,6 +512,8 @@ export interface LauncherApi {
   capturePosition: (profileId: string) => Promise<PositionSnapshot | null>;
   configureDiscord: (profileId: string, input: DiscordRuntimeInput) => Promise<LauncherState>;
   updateSettings: (patch: Partial<AppSettings>) => Promise<LauncherState>;
+  /** Whether OS-backed secret encryption (safeStorage) is available; false = passwords stay in memory only. */
+  secretAvailable: () => Promise<boolean>;
   openUserData: () => Promise<void>;
   minimizeWindow: () => Promise<void>;
   toggleMaximizeWindow: () => Promise<boolean>;

@@ -8,7 +8,8 @@ import {
   cropBuildPlan,
   stringifyReason,
   stringifyMinecraftText,
-  type MineflayerFactory
+  type MineflayerFactory,
+  type SecretPersistence
 } from './botManager';
 import type { CactusFarmConfig, CropFarmConfig } from '../../shared/types';
 import type { AccountProfile, StorageConfig } from '../../shared/types';
@@ -1908,5 +1909,187 @@ describe('capturePosition', () => {
     });
     await manager.load();
     expect(await manager.capturePosition(profile.id)).toBeNull();
+  });
+});
+
+class FakeVault implements SecretPersistence {
+  store = new Map<string, string>();
+  available = true;
+  deleteCalls: string[] = [];
+  isAvailable(): boolean {
+    return this.available;
+  }
+  async get(key: string): Promise<string | null> {
+    return this.store.get(key) ?? null;
+  }
+  async set(key: string, value: string): Promise<boolean> {
+    if (!this.available) return false;
+    if (value) this.store.set(key, value);
+    else this.store.delete(key);
+    return true;
+  }
+  async delete(key: string): Promise<void> {
+    this.deleteCalls.push(key);
+    this.store.delete(key);
+  }
+  async has(key: string): Promise<boolean> {
+    return this.store.has(key);
+  }
+  async prune(keys: Iterable<string>): Promise<void> {
+    const keep = new Set(keys);
+    for (const key of [...this.store.keys()]) {
+      if (!keep.has(key)) this.store.delete(key);
+    }
+  }
+}
+
+const proxyProfile: AccountProfile = {
+  ...profile,
+  proxy: { enabled: true, type: 'socks5', host: 'proxy.local', port: 1080, username: 'u', password: '' }
+};
+
+describe('BotManager secret vault', () => {
+  it('redacts stored passwords from broadcast state and flags them as saved', async () => {
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => new FakeBot(),
+      store: new MemoryStore([proxyProfile]),
+      secretVault: new FakeVault()
+    });
+    await manager.load();
+    await manager.saveProfile({
+      ...proxyProfile,
+      startup: { ...proxyProfile.startup, authPassword: 'topsecret' },
+      authPasswordChanged: true,
+      proxy: { ...proxyProfile.proxy!, password: 'proxypass' },
+      proxyPasswordChanged: true
+    });
+
+    const broadcast = manager.getState().profiles.find((item) => item.id === proxyProfile.id)!;
+    expect(broadcast.startup.authPassword).toBe('');
+    expect(broadcast.hasAuthPassword).toBe(true);
+    expect(broadcast.proxy?.password).toBe('');
+    expect(broadcast.hasProxyPassword).toBe(true);
+  });
+
+  it('encrypts secrets into the vault and keeps profiles.json plaintext-free', async () => {
+    const vault = new FakeVault();
+    const store = new MemoryStore([profile]);
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => new FakeBot(),
+      store,
+      secretVault: vault
+    });
+    await manager.load();
+    await manager.saveProfile({
+      ...profile,
+      startup: { ...profile.startup, authPassword: 'topsecret' },
+      authPasswordChanged: true
+    });
+
+    expect(vault.store.get('session-test:auth')).toBe('topsecret');
+    expect(store.document.profiles[0].startup.authPassword).toBe('');
+  });
+
+  it('keeps the stored password when the renderer saves without changing it', async () => {
+    const vault = new FakeVault();
+    vault.store.set('session-test:auth', 'kept-pw');
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => new FakeBot(),
+      store: new MemoryStore([profile]),
+      secretVault: vault
+    });
+    await manager.load();
+    // The renderer echoes the redacted '' with the change-flag unset.
+    await manager.saveProfile({
+      ...profile,
+      startup: { ...profile.startup, authPassword: '' },
+      authPasswordChanged: false
+    });
+
+    expect(vault.store.get('session-test:auth')).toBe('kept-pw');
+    expect(manager.getState().profiles.find((item) => item.id === 'session-test')?.hasAuthPassword).toBe(true);
+  });
+
+  it('deletes vault secrets when a profile is removed', async () => {
+    const vault = new FakeVault();
+    vault.store.set('session-test:auth', 'x');
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => new FakeBot(),
+      store: new MemoryStore([profile]),
+      secretVault: vault
+    });
+    await manager.load();
+    await manager.deleteProfile('session-test');
+
+    expect(vault.deleteCalls).toContain('session-test:auth');
+    expect(vault.store.has('session-test:auth')).toBe(false);
+  });
+
+  it('rehydrates the encrypted password on load and uses it at connect', async () => {
+    vi.useFakeTimers();
+    const vault = new FakeVault();
+    vault.store.set('session-test:auth', 'restored-pw');
+    const fakeBot = new FakeBot();
+    const startupProfile: AccountProfile = {
+      ...profile,
+      startup: { ...profile.startup, enabled: true, authDelayMs: 100, transferDelayMs: 100 }
+    };
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([startupProfile]),
+      secretVault: vault
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+    vi.advanceTimersByTime(100);
+
+    expect(fakeBot.chat).toHaveBeenCalledWith('/login restored-pw');
+  });
+});
+
+describe('BotManager join-flow signals', () => {
+  it('fires the auth step early when a lobby-ready pattern matches', async () => {
+    vi.useFakeTimers();
+    const fakeBot = new FakeBot();
+    const startupProfile: AccountProfile = {
+      ...profile,
+      startup: {
+        ...profile.startup,
+        enabled: true,
+        authMode: 'login',
+        authPassword: 'pw',
+        // Huge caps: only a signal can advance the step within the test.
+        authDelayMs: 999999,
+        transferDelayMs: 999999,
+        readyPatterns: ['please login']
+      }
+    };
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([startupProfile]),
+      secretVault: new FakeVault()
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    fakeBot.emit('spawn');
+    expect(fakeBot.chat).not.toHaveBeenCalled();
+
+    fakeBot.emit('messagestr', 'Please LOGIN to continue');
+    expect(fakeBot.chat).toHaveBeenCalledWith('/login pw');
   });
 });

@@ -314,6 +314,11 @@ async function handleApiRequest(
     return;
   }
 
+  if (request.method === 'GET' && url.pathname === '/api/secret-available') {
+    sendJson(request, response, 200, { available: options.manager.secretAvailable() });
+    return;
+  }
+
   sendJson(request, response, 404, { error: 'Not found' });
 }
 
