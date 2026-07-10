@@ -3,10 +3,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BotManager } from '../src/main/bot/botManager.js';
 import { startLocalWebServer, type LocalWebServer } from '../src/main/server/localWebServer.js';
+import { installCrashGuard } from './crashGuard.js';
 import { launcherUserDataDir } from './paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+installCrashGuard('web-main');
 
 let manager: BotManager | null = null;
 let localWebServer: LocalWebServer | null = null;

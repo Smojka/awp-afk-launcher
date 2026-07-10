@@ -29,15 +29,21 @@ jobs:
           cat > release-notes.md <<'NOTES'
           ChunkKeeper release build.
 
-          ### Yenilikler (v0.4.3)
-          - **Daha hızlı bağlanma:** join flow artık kör sabit beklemeler yerine sunucu sinyaline
-            göre ilerliyor (opsiyonel lobby-ready / auth-success desenleri); ağır modüller önden
-            yüklenip ilk bağlantı hızlandı.
-          - **Daha hızlı inşa:** işlem kuyruğu gecikmeyi toplamsal değil minimum aralık olarak
-            uyguluyor ve kazı onayı olay-tabanlı — çiftlik kurulumu belirgin hızlandı.
-          - **Kayıtlı şifreler (güvenli):** sunucu ve proxy şifreleri artık işletim sistemi
-            anahtarlığıyla şifrelenip kalıcı saklanıyor; uygulama kapansa da gitmiyor. Şifreler
-            arayüze/web paneline düz metin gönderilmiyor, yalnızca bağlanma anında çözülüyor.
+          ### What's new (v0.4.4)
+
+          Fixed a crash that could take the whole app down. If you stopped a bot while it was
+          still opening its connection, that socket was left unattended. About twenty seconds
+          later the TCP connect timed out, and by then nothing on the bot was listening for the
+          error, so Node rethrew it and Electron killed the process with the "A JavaScript error
+          occurred in the main process" dialog. Teardown now keeps an error listener in place and
+          aborts a socket that never finished connecting, so the timeout never fires at all.
+
+          Uncaught exceptions and unhandled rejections in the main process are now written to the
+          log instead of ending the session. A stray ECONNRESET or ETIMEDOUT arriving from a
+          connection you already closed will not disconnect the bots that are still online.
+
+          Updated to Mineflayer 4.37.1 with refreshed minecraft-data. Version presets now go up
+          to 1.21.11.
 
           ### Included artifacts
           - ChunkKeeper native macOS ARM64 DMG

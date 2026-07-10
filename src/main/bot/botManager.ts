@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import net from 'node:net';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { Vec3 } from 'vec3';
 import {
@@ -47,6 +48,9 @@ import { ProfileStore } from '../storage/profileStore.js';
 import type { SecretVault } from '../storage/secretVault.js';
 import { authSecretKey, proxySecretKey } from '../storage/secretKeys.js';
 
+const requireFromHere = createRequire(import.meta.url);
+const fallbackStableMinecraftVersion = '1.21.11';
+
 type ProfilePersistence = Pick<ProfileStore, 'load' | 'save'>;
 
 /** The subset of SecretVault botManager depends on (injectable for tests). */
@@ -90,6 +94,28 @@ type MineflayerOptions = {
   profilesFolder?: string;
   connect?: (client: ProxyClientLike) => void;
 };
+
+type MinecraftDataModule = {
+  (version: string): { version?: unknown } | null | undefined;
+  supportedVersions?: {
+    pc?: string[];
+  };
+};
+
+let minecraftDataModule: MinecraftDataModule | null = null;
+
+class UnsupportedMinecraftVersionError extends Error {
+  constructor(version: string, detail?: string) {
+    const supported = latestSupportedMinecraftVersions();
+    const supportedSuffix = supported.length ? ` Bundled versions include ${supported.slice(0, 8).join(', ')}.` : '';
+    const detailSuffix = detail ? ` ${detail}` : '';
+    super(
+      `Minecraft ${version} is not available in the bundled Mineflayer data.${supportedSuffix} ` +
+        `Use Auto or ${fallbackStableMinecraftVersion}; Minecraft Java 26.x still needs complete Prismarine protocol/data support before it can run reliably.${detailSuffix}`
+    );
+    this.name = 'UnsupportedMinecraftVersionError';
+  }
+}
 
 type ProxyClientLike = {
   setSocket?: (socket: net.Socket) => void;
@@ -144,6 +170,7 @@ type BotLike = RoutineBot &
   EventEmitter & {
     _client?: EventEmitter & {
       write?: (packetName: string, payload: Record<string, unknown>) => void;
+      socket?: net.Socket;
     };
     acceptResourcePack?: () => void;
     username?: string;
@@ -671,7 +698,9 @@ export class BotManager extends EventEmitter {
       session.snapshot.lastError = message;
       this.updateStatus(session, 'error', 'Connection failed');
       this.pushEvent(session, 'error', 'danger', 'Connection failed', message);
-      this.scheduleReconnect(session);
+      if (!(error instanceof UnsupportedMinecraftVersionError)) {
+        this.scheduleReconnect(session);
+      }
     }
     this.emitState();
     return this.getState();
@@ -693,10 +722,13 @@ export class BotManager extends EventEmitter {
     session.resumeOps.clear();
     session.involuntaryDrop = false;
     this.stopDiscordPolling(session);
-    if (session.bot) {
+    const bot = session.bot;
+    if (bot) {
       this.updateStatus(session, 'stopping', 'Stopping session');
-      session.bot.quit?.('Stopped from ChunkKeeper');
-      session.bot.removeAllListeners();
+      // quit() can fire 'end' synchronously, and that handler nulls session.bot out from
+      // under us — hold the instance locally so the teardown below always reaches it.
+      bot.quit?.('Stopped from ChunkKeeper');
+      abandonBot(bot);
       session.bot = null;
     }
     session.snapshot.routineActive = false;
@@ -1175,6 +1207,7 @@ export class BotManager extends EventEmitter {
   }
 
   private async createBot(profile: AccountProfile): Promise<BotLike> {
+    assertMineflayerDataSupportsVersion(profile.version || undefined);
     const factory = this.options.factory ?? defaultMineflayerFactory;
     const proxyConnector = profile.proxy?.enabled ? createProxyConnector(profile.proxy, profile.host, profile.port) : undefined;
     const bot = await factory({
@@ -1186,7 +1219,13 @@ export class BotManager extends EventEmitter {
       profilesFolder: this.authSessionDir(),
       ...(proxyConnector ? { connect: proxyConnector } : {})
     });
-    installResourcePackAutoAccept(bot);
+    try {
+      installResourcePackAutoAccept(bot);
+    } catch (error) {
+      // The bot owns a live socket even though connect() will never adopt it.
+      abandonBot(bot);
+      throw error;
+    }
     return bot;
   }
 
@@ -3593,6 +3632,32 @@ export class BotManager extends EventEmitter {
   }
 }
 
+/**
+ * Mineflayer forwards every socket failure into `bot.emit('error', err)`. A bot with no
+ * 'error' listener makes Node rethrow that error, which in Electron surfaces as the fatal
+ * "A JavaScript error occurred in the main process" dialog. Two windows used to leave a bot
+ * bare: the gap between `createBot()` (which opens the socket at once) and `attachBotEvents()`,
+ * and everything after `disconnect()` called `removeAllListeners()`. This listener is attached
+ * for the bot's whole life so neither window can crash the launcher.
+ */
+function ignoreBotError(): void {
+  // Real handling lives in attachBotEvents; this is only the "never throw" floor.
+}
+
+/**
+ * Drop a bot we no longer own. Beyond muting its listeners we have to destroy a socket that
+ * is still mid-connect: `client.end()` merely queues a FIN, so an unanswered SYN keeps
+ * retransmitting and lands as `connect ETIMEDOUT` ~21s after the session was discarded.
+ */
+function abandonBot(bot: BotLike): void {
+  bot.removeAllListeners?.();
+  bot.on?.('error', ignoreBotError);
+  const socket = bot._client?.socket;
+  if (socket?.connecting && !socket.destroyed) {
+    socket.destroy();
+  }
+}
+
 async function defaultMineflayerFactory(options: MineflayerOptions): Promise<BotLike> {
   const mineflayerModule = await import('mineflayer');
   const createBot = mineflayerModule.createBot ?? mineflayerModule.default?.createBot;
@@ -3600,9 +3665,47 @@ async function defaultMineflayerFactory(options: MineflayerOptions): Promise<Bot
     throw new Error('mineflayer createBot() was not found');
   }
   const bot = createBot(options) as unknown as BotLike;
-  unifyActionSequences(bot);
-  await loadPathfinderPlugin(bot);
+  // The socket is already connecting; nothing else listens for 'error' until connect()
+  // reaches attachBotEvents(), several awaits from here.
+  bot.on('error', ignoreBotError);
+  try {
+    unifyActionSequences(bot);
+    await loadPathfinderPlugin(bot);
+  } catch (error) {
+    abandonBot(bot);
+    throw error;
+  }
   return bot;
+}
+
+function loadMinecraftDataModule(): MinecraftDataModule {
+  if (!minecraftDataModule) {
+    minecraftDataModule = requireFromHere('minecraft-data') as MinecraftDataModule;
+  }
+  return minecraftDataModule;
+}
+
+function latestSupportedMinecraftVersions(): string[] {
+  try {
+    const versions = loadMinecraftDataModule().supportedVersions?.pc ?? [];
+    return versions.filter((version) => /^\d/.test(version)).slice(-20).reverse();
+  } catch {
+    return [];
+  }
+}
+
+function assertMineflayerDataSupportsVersion(version: string | undefined): void {
+  const normalized = version?.trim();
+  if (!normalized) return;
+
+  try {
+    const data = loadMinecraftDataModule()(normalized);
+    if (data?.version) return;
+    throw new UnsupportedMinecraftVersionError(normalized);
+  } catch (error) {
+    if (error instanceof UnsupportedMinecraftVersionError) throw error;
+    throw new UnsupportedMinecraftVersionError(normalized, `minecraft-data reported: ${formatError(error)}`);
+  }
 }
 
 /**

@@ -12,10 +12,13 @@ import type {
   OperationStartRequest,
   SaveProfileInput
 } from '../src/shared/types.js';
+import { installCrashGuard } from './crashGuard.js';
 import { launcherUserDataDir } from './paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+installCrashGuard('main');
 
 let mainWindow: BrowserWindow | null = null;
 let manager: BotManager | null = null;

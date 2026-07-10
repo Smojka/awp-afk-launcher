@@ -7,11 +7,11 @@
 Manage many accounts, keep sessions alive, run lobby‑auth/transfer flows, drive farm & script automation, and watch live telemetry — from one dense operator UI.
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.4.0-6d5efc.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.4.4-6d5efc.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-8b5cf6.svg)](#platform-support-matrix)
 [![Electron](https://img.shields.io/badge/Electron-39-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB.svg?logo=react&logoColor=black)](https://react.dev/)
-[![Mineflayer](https://img.shields.io/badge/Mineflayer-4.33-3ba55d.svg)](https://github.com/PrismarineJS/mineflayer)
+[![Mineflayer](https://img.shields.io/badge/Mineflayer-4.37-3ba55d.svg)](https://github.com/PrismarineJS/mineflayer)
 
 *Developed by **smojka**.*
 
@@ -707,14 +707,18 @@ git push origin v0.3.0
 
 ## Supported Minecraft versions
 
-The UI offers presets **1.21.1 / 1.20.6 / 1.20.1 / 1.19.4**, a custom‑version field, and *Auto* (`false`). In **packaged** builds, `minecraft-data` is pruned to a whitelist:
+The UI offers presets through **1.21.11**, a custom-version field, and *Auto* (`false`). In **packaged** builds, `minecraft-data` is pruned to a whitelist:
 
 ```
 common, latest, 1.16, 1.16.1, 1.17, 1.19, 1.19.2, 1.19.4,
-1.20, 1.20.1, 1.20.2, 1.20.3, 1.20.4, 1.20.5, 1.20.6, 1.21.1
+1.20, 1.20.1, 1.20.2, 1.20.3, 1.20.4, 1.20.5, 1.20.6,
+1.21, 1.21.1, 1.21.3, 1.21.4, 1.21.5, 1.21.6, 1.21.8,
+1.21.9, 1.21.11
 ```
 
 Connecting with a version **outside** this list can work in a dev checkout but **break in a packaged build**. Prefer a whitelisted version, or add yours to the prune list in `package.json` and rebuild.
+
+Minecraft Java **26.x** is intentionally blocked for now: the current Prismarine packages know the protocol index entries, but the bundled `minecraft-data` package does not provide loadable 26.x data folders yet. The app fails with a clear unsupported-version error instead of entering a reconnect loop.
 
 ---
 
@@ -757,7 +761,7 @@ There is **no i18n framework** — strings are hardcoded. The **primary locale i
 
 ## Tech stack
 
-**Electron 39** · **React 19** · **TypeScript 5.9** · **Vite 7** · **Vitest 4** · **Mineflayer 4.33** + **mineflayer‑pathfinder 2.4.5** · **electron‑updater 6.8** · **socks 2.8** · **vec3** · **electron‑builder 26** · fonts **IBM Plex Sans** + **JetBrains Mono** · icons **Lucide**.
+**Electron 39** · **React 19** · **TypeScript 5.9** · **Vite 7** · **Vitest 4** · **Mineflayer 4.37.1** + **mineflayer‑pathfinder 2.4.5** · **electron‑updater 6.8** · **socks 2.8** · **vec3** · **electron‑builder 26** · fonts **IBM Plex Sans** + **JetBrains Mono** · icons **Lucide**.
 
 ---
 

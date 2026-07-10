@@ -228,6 +228,74 @@ describe('BotManager', () => {
     expect(state.sessions[profile.id].routineActive).toBe(true);
   });
 
+  it('survives a socket error that lands after the session was disconnected', async () => {
+    const fakeBot = new FakeBot();
+    const socket = {
+      connecting: true,
+      destroyed: false,
+      destroy: vi.fn(function destroy(this: { destroyed: boolean }) {
+        this.destroyed = true;
+      })
+    };
+    (fakeBot._client as unknown as { socket: typeof socket }).socket = socket;
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+    await manager.disconnect(profile.id);
+
+    // A still-connecting socket gets aborted, so its pending SYN can never resurface as ETIMEDOUT.
+    expect(socket.destroy).toHaveBeenCalledTimes(1);
+    // And a late error on a torn-down bot must not reach Node's uncaught-exception path.
+    expect(() => fakeBot.emit('error', new Error('connect ETIMEDOUT 84.200.135.159:25565'))).not.toThrow();
+    expect(manager.getState().sessions[profile.id].state).toBe('offline');
+  });
+
+  it('reports a connection error instead of throwing it out of the socket callback', async () => {
+    const fakeBot = new FakeBot();
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory: () => fakeBot,
+      store: new MemoryStore([profile])
+    });
+
+    await manager.load();
+    await manager.connect(profile.id);
+
+    expect(() => fakeBot.emit('error', new Error('connect ECONNREFUSED 127.0.0.1:25565'))).not.toThrow();
+    expect(manager.getState().sessions[profile.id].lastError).toContain('ECONNREFUSED');
+  });
+
+  it('blocks Minecraft versions without bundled Mineflayer data before creating a bot', async () => {
+    const unsupportedProfile: AccountProfile = {
+      ...profile,
+      id: 'session-unsupported-version',
+      version: '26.2',
+      reconnect: { ...profile.reconnect, enabled: true, maxAttempts: 3 }
+    };
+    const factory: MineflayerFactory = vi.fn(() => new FakeBot());
+    const manager = new BotManager({
+      userDataDir: '/tmp/afk-launcher-test',
+      appVersion: '0.1.0',
+      factory,
+      store: new MemoryStore([unsupportedProfile])
+    });
+
+    await manager.load();
+    const state = await manager.connect(unsupportedProfile.id);
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(state.sessions[unsupportedProfile.id].state).toBe('error');
+    expect(state.sessions[unsupportedProfile.id].lastError).toContain('Minecraft 26.2 is not available');
+    expect(state.sessions[unsupportedProfile.id].nextReconnectAt).toBeNull();
+  });
+
   it('auto-eats inventory food before low hunger can become starvation damage', async () => {
     const fakeBot = new FakeBot();
     fakeBot.food = 10;
