@@ -7,7 +7,7 @@
 Manage many accounts, keep sessions alive, run lobby‑auth/transfer flows, drive farm & script automation, and watch live telemetry — from one dense operator UI.
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.4.4-6d5efc.svg)](package.json)
+[![Version](https://img.shields.io/badge/version-0.4.5-6d5efc.svg)](package.json)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-8b5cf6.svg)](#platform-support-matrix)
 [![Electron](https://img.shields.io/badge/Electron-39-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB.svg?logo=react&logoColor=black)](https://react.dev/)

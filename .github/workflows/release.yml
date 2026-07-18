@@ -29,24 +29,23 @@ jobs:
           cat > release-notes.md <<'NOTES'
           ChunkKeeper release build.
 
-          ### What's new (v0.4.4)
+          ### What's new (v0.4.5)
 
-          Fixed a crash that could take the whole app down. If you stopped a bot while it was
-          still opening its connection, that socket was left unattended. About twenty seconds
-          later the TCP connect timed out, and by then nothing on the bot was listening for the
-          error, so Node rethrew it and Electron killed the process with the "A JavaScript error
-          occurred in the main process" dialog. Teardown now keeps an error listener in place and
-          aborts a socket that never finished connecting, so the timeout never fires at all.
+          Updating no longer means clicking through an installer. On Windows the download now
+          installs silently and relaunches on its own. On macOS the app swaps its own bundle from
+          the release zip, and only falls back to opening the DMG by hand when the swap cannot run
+          — a translocated app, an install directory it cannot write to, or a release without an
+          update zip.
 
-          Uncaught exceptions and unhandled rejections in the main process are now written to the
-          log instead of ending the session. A stray ECONNRESET or ETIMEDOUT arriving from a
-          connection you already closed will not disconnect the bots that are still online.
+          Update checks also run in the background every six hours instead of only at launch, so a
+          release published while the app is open still shows up without a restart.
 
-          Updated to Mineflayer 4.37.1 with refreshed minecraft-data. Version presets now go up
-          to 1.21.11.
+          The little "?" badges next to buttons, toggles and sliders are gone. They crowded every
+          panel, and the labels already say what each control does.
 
           ### Included artifacts
           - ChunkKeeper native macOS ARM64 DMG
+          - ChunkKeeper native macOS ARM64 update ZIP (used by the in-app updater)
           - ChunkKeeper native Windows x64 NSIS installer
           - ChunkKeeper Web macOS ARM64 DMG
           - ChunkKeeper Web Windows x64 portable EXE
