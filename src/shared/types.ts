@@ -462,9 +462,12 @@ export interface DiscordRuntimeInput {
 export type UpdatePhase = 'idle' | 'available' | 'downloading' | 'downloaded' | 'error';
 
 /**
- * 'auto' = the download installs in place and relaunches (Windows).
- * 'manual' = the installer is downloaded and opened; the user finishes by hand
- * (macOS — ad-hoc signing forbids silent in-place updates).
+ * 'auto' = the download installs in place and relaunches — a silent NSIS install on Windows, an
+ * in-place `.app` bundle swap on macOS.
+ * 'manual' = the installer is downloaded and opened for the user to finish by hand. On macOS this
+ * is the DMG fallback used whenever the self-swap can't run (ad-hoc signing rules out a
+ * Squirrel.Mac-style silent update, and translocation / an unwritable install dir / a missing
+ * update zip all force the manual path).
  */
 export type UpdateInstallMode = 'auto' | 'manual';
 

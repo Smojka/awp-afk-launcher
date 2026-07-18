@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, Menu, nativeImage, screen, shell, Tray, ty
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BotManager } from '../src/main/bot/botManager.js';
-import { UpdateService } from '../src/main/update/updateService.js';
+import { cleanupMacUpdateLeftovers, UpdateService } from '../src/main/update/updateService.js';
 import type {
   AppSettings,
   DiscordRuntimeInput,
@@ -194,16 +194,17 @@ function getUpdateService(): UpdateService {
   return updateService;
 }
 
-async function runUpdateCheckOnLaunch(): Promise<void> {
-  try {
-    const result = await getUpdateService().check();
-    if (result.updateAvailable) {
-      broadcast('update:available', result);
-    }
-  } catch (error) {
-    // Offline or rate-limited checks must never block startup.
-    console.warn('[update] launch check failed:', error instanceof Error ? error.message : error);
-  }
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+async function startBackgroundUpdateChecks(): Promise<void> {
+  // Clear leftovers from a prior macOS self-swap before checking (best-effort, no-op elsewhere).
+  await cleanupMacUpdateLeftovers();
+  void getUpdateService().checkInBackground();
+  // Re-check every 6 hours so a release published mid-session still surfaces. unref() keeps the
+  // timer from holding the process open at quit; checkInBackground handles its own emit/dedup.
+  setInterval(() => {
+    void getUpdateService().checkInBackground();
+  }, UPDATE_CHECK_INTERVAL_MS).unref();
 }
 
 function registerIpc(): void {
@@ -293,7 +294,7 @@ if (!hasSingleInstanceLock) {
     minimizeToTrayOnClose = manager.getState().settings.minimizeToTrayOnClose;
     await createWindow();
     reconcileTray();
-    void runUpdateCheckOnLaunch();
+    void startBackgroundUpdateChecks();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

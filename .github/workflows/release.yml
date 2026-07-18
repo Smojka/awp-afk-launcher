@@ -120,6 +120,16 @@ jobs:
       - name: Verify native macOS app signature
         run: codesign --verify --deep --strict --verbose=2 release/mac-arm64/ChunkKeeper.app
 
+      - name: Verify update zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Prove the artifact the macOS self-swap consumes: extract the arm64 update zip and
+          # verify the bundle inside still passes codesign after ditto round-trips it.
+          workdir="$(mktemp -d)"
+          ditto -x -k release/ChunkKeeper-*-arm64.zip "$workdir"
+          codesign --verify --deep --strict --verbose=2 "$workdir/ChunkKeeper.app"
+
       - name: Build web dashboard DMG
         run: npm run package:web:mac
 
@@ -150,6 +160,9 @@ jobs:
           path: |
             release/*.dmg
             release/*.dmg.blockmap
+            release/*-arm64.zip
+            release/*.zip.blockmap
+            release/latest-mac.yml
             release/ChunkKeeper-macOS-First-Run.zip
           if-no-files-found: error
 
@@ -157,7 +170,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ github.ref_name }}
-        run: gh release upload "$TAG_NAME" release/*.dmg release/*.dmg.blockmap release/ChunkKeeper-macOS-First-Run.zip --clobber
+        run: gh release upload "$TAG_NAME" release/*.dmg release/*.dmg.blockmap release/*-arm64.zip release/*.zip.blockmap release/latest-mac.yml release/ChunkKeeper-macOS-First-Run.zip --clobber
 
   windows:
     name: Windows EXE
