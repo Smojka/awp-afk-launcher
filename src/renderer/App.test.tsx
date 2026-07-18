@@ -201,14 +201,6 @@ function createTestApi(): LauncherApi {
   };
 }
 
-function buttonsWithoutAdjacentHelp(root: ParentNode) {
-  return Array.from(root.querySelectorAll('button')).filter((button) => {
-    if (button.getAttribute('role') === 'tab') return false;
-    const parent = button.parentElement;
-    return !parent || !Array.from(parent.children).some((child) => child.classList.contains('help-tip'));
-  });
-}
-
 describe('ChunkKeeper UI', () => {
   it('renders the command desk and AFK-specific controls', async () => {
     const user = userEvent.setup();
@@ -278,38 +270,6 @@ describe('ChunkKeeper UI', () => {
 
     expect(await screen.findByText(/Local web dashboard API is unavailable/i)).toBeInTheDocument();
     expect(screen.queryByText('Server profile')).not.toBeInTheDocument();
-  });
-
-  it('renders help affordances beside buttons and sliders', async () => {
-    const user = userEvent.setup();
-    const { container } = render(<App api={createTestApi()} />);
-
-    await screen.findByRole('heading', { name: 'ChunkKeeper' });
-
-    expect(buttonsWithoutAdjacentHelp(container)).toEqual([]);
-    const sliders = Array.from(container.querySelectorAll('.slider'));
-    // Cactus "Layers" slider is hidden while the auto-farm build toggle is on (default).
-    // The generator panel uses a structured slot editor + numeric fields rather than sliders.
-    expect(sliders.length).toBeGreaterThanOrEqual(6);
-    expect(sliders.every((slider) => slider.querySelector('.help-tip'))).toBe(true);
-    const connectHelp = screen.getByLabelText(/Seçili hesabı bağlar/i);
-    expect(connectHelp).toBeInTheDocument();
-
-    await user.hover(connectHelp);
-    const tooltip = await screen.findByRole('tooltip');
-    expect(tooltip).toHaveTextContent(/Seçili hesabı bağlar/i);
-    expect(tooltip.parentElement).toBe(document.body);
-    await user.unhover(connectHelp);
-
-    await user.click(screen.getByTitle('Settings'));
-    let dialog = await screen.findByRole('dialog', { name: /^settings$/i });
-    expect(buttonsWithoutAdjacentHelp(dialog)).toEqual([]);
-    expect(dialog.querySelectorAll('.help-tip').length).toBeGreaterThanOrEqual(dialog.querySelectorAll('button').length);
-    await user.click(within(dialog).getByRole('button', { name: /^done$/i }));
-
-    await user.click(screen.getByRole('button', { name: /^edit profile$/i }));
-    dialog = await screen.findByRole('dialog', { name: /^server profile editor$/i });
-    expect(buttonsWithoutAdjacentHelp(dialog)).toEqual([]);
   });
 
   it('creates a new account draft without copying the selected account password, then saves it', async () => {

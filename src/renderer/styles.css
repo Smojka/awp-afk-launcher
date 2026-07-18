@@ -176,7 +176,7 @@ textarea {
   text-transform: uppercase;
 }
 
-:where(button, a, input, select, textarea, label, .row, .kpi, .help-tip):focus-visible {
+:where(button, a, input, select, textarea, label, .row, .kpi):focus-visible {
   outline: 2px solid rgba(139, 92, 246, 0.7);
   outline-offset: 2px;
   border-radius: 4px;
@@ -553,82 +553,6 @@ textarea {
   color: rgb(255 228 230);
 }
 
-.control-with-help {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-}
-.control-with-help--block {
-  display: flex;
-  width: 100%;
-}
-.control-with-help--block > .btn {
-  flex: 1 1 auto;
-}
-.help-tip {
-  position: relative;
-  z-index: 3;
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
-  border: 1px solid rgba(139, 92, 246, 0.26);
-  border-radius: var(--r-pill);
-  background: rgba(139, 92, 246, 0.08);
-  color: var(--accent-strong);
-  cursor: help;
-}
-.help-tip svg {
-  pointer-events: none;
-}
-.help-tip__bubble {
-  position: fixed;
-  z-index: 2147483000;
-  display: block;
-  width: max-content;
-  max-width: min(280px, calc(100vw - 24px));
-  padding: 9px 11px;
-  border: 1px solid rgba(167, 139, 250, 0.5);
-  border-radius: var(--radius);
-  background: #080914;
-  color: #f4f1ff;
-  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.78), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
-  font-family: var(--sans);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.42;
-  opacity: 1;
-  pointer-events: none;
-  text-align: left;
-  transform: translate(-50%, -100%);
-  visibility: visible;
-  white-space: normal;
-}
-.help-tip__bubble::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  bottom: -5px;
-  width: 8px;
-  height: 8px;
-  border-right: 1px solid rgba(167, 139, 250, 0.5);
-  border-bottom: 1px solid rgba(167, 139, 250, 0.5);
-  background: #080914;
-  transform: translateX(-50%) rotate(45deg);
-}
-.help-tip__bubble--bottom {
-  transform: translate(-50%, 0);
-}
-.help-tip__bubble--bottom::after {
-  top: -5px;
-  bottom: auto;
-  border: 0;
-  border-top: 1px solid rgba(167, 139, 250, 0.5);
-  border-left: 1px solid rgba(167, 139, 250, 0.5);
-}
 
 .icon-btn {
   display: grid;
@@ -861,16 +785,6 @@ textarea {
   font-size: 12px;
 }
 
-.row-with-help {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-}
-.row-with-help .row {
-  flex: 1 1 auto;
-  min-width: 0;
-}
 
 .row {
   display: grid;
@@ -1431,9 +1345,6 @@ textarea {
   align-items: center;
   gap: 5px;
 }
-.step-list > .control-with-help {
-  justify-self: start;
-}
 .step-list__empty {
   margin: 0;
   padding: 10px 12px;
@@ -1561,9 +1472,6 @@ textarea {
   align-items: center;
   gap: 5px;
 }
-.rule-list > .control-with-help {
-  justify-self: start;
-}
 .rule-list__add {
   justify-self: start;
 }
@@ -1649,12 +1557,6 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  min-width: 0;
-}
-.slider__label-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
   min-width: 0;
 }
 .slider__top strong {
@@ -3159,10 +3061,6 @@ textarea {
   }
   .toggle {
     min-height: 44px;
-  }
-  .help-tip {
-    width: 24px;
-    height: 24px;
   }
   .row {
     padding: 12px 9px;

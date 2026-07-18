@@ -12,7 +12,6 @@ import {
   ChevronDown,
   CircleAlert,
   Crosshair,
-  CircleHelp,
   Download,
   FolderOpen,
   Gauge,
@@ -557,29 +556,21 @@ export function App({ api }: { api?: LauncherApi } = {}) {
         </div>
 
         <div className="topbar__actions">
-          <ActionWithHelp help="Enabled olan tüm hesapları sırayla bağlar. Settings içindeki connect stagger değeri iki bağlantı arasına bekleme koyar.">
-            <button className="btn btn--primary" onClick={() => run(() => apiClient!.startAll())}>
-              <Play size={15} />
-              Start all
-            </button>
-          </ActionWithHelp>
-          <ActionWithHelp help="Çalışan tüm oturumları kapatır ve rutinleri durdurur. Onay ayarı açıksa önce senden onay ister.">
-            <button className="btn btn--danger" onClick={stopAll}>
-              <Square size={15} />
-              Stop all
-            </button>
-          </ActionWithHelp>
+          <button className="btn btn--primary" onClick={() => run(() => apiClient!.startAll())}>
+            <Play size={15} />
+            Start all
+          </button>
+          <button className="btn btn--danger" onClick={stopAll}>
+            <Square size={15} />
+            Stop all
+          </button>
           <span className="topbar__divider" />
-          <ActionWithHelp help="ChunkKeeper'ın profil ve oturum dosyalarını tuttuğu yerel veri klasörünü açar.">
-            <button className="icon-btn" title="Open data folder" onClick={() => run(() => apiClient!.openUserData())}>
-              <FolderOpen size={16} />
-            </button>
-          </ActionWithHelp>
-          <ActionWithHelp help="Başlangıç, görünüm ve yeni hesap varsayılanlarını değiştirdiğin ayar penceresini açar.">
-            <button className="icon-btn" title="Settings" onClick={() => setSettingsOpen(true)}>
-              <Settings size={16} />
-            </button>
-          </ActionWithHelp>
+          <button className="icon-btn" title="Open data folder" onClick={() => run(() => apiClient!.openUserData())}>
+            <FolderOpen size={16} />
+          </button>
+          <button className="icon-btn" title="Settings" onClick={() => setSettingsOpen(true)}>
+            <Settings size={16} />
+          </button>
         </div>
 
         {showWindowControls ? (
@@ -626,18 +617,16 @@ export function App({ api }: { api?: LauncherApi } = {}) {
             {state.profiles.length === 0 ? <p className="sidebar__empty">No accounts yet.</p> : null}
           </div>
           <div className="sidebar__foot">
-            <ActionWithHelp block help="Seçili profilden güvenli ayarları kopyalayıp yeni bir hesap taslağı açar. Şifre alanı özellikle boş bırakılır.">
-              <button
-                className="btn btn--block"
-                onClick={() => {
-                  setDraft(createNewAccountDraft(draft, state.settings, state.profiles.length + 1));
-                  setProfileEditorOpen(true);
-                }}
-              >
-                <Plus size={15} />
-                New account
-              </button>
-            </ActionWithHelp>
+            <button
+              className="btn btn--block"
+              onClick={() => {
+                setDraft(createNewAccountDraft(draft, state.settings, state.profiles.length + 1));
+                setProfileEditorOpen(true);
+              }}
+            >
+              <Plus size={15} />
+              New account
+            </button>
           </div>
         </aside>
 
@@ -662,36 +651,30 @@ export function App({ api }: { api?: LauncherApi } = {}) {
               </div>
               <div className="toolbar__actions">
                 <StatusPill state={liveState} label={selectedSession?.statusMessage ?? STATE_LABEL[liveState]} />
-                <ActionWithHelp help="Seçili hesabı bağlar. Join flow açıksa önce lobby auth/register komutunu, sonra transfer komutunu çalıştırır; AFK rutini en son başlar.">
-                  <button
-                    className="btn btn--primary"
-                    disabled={!draft.id || isLive}
-                    onClick={() => draft.id && run(() => apiClient!.connect(draft.id))}
-                  >
-                    <Play size={15} />
-                    Connect
-                  </button>
-                </ActionWithHelp>
-                <ActionWithHelp help="Seçili oturumu bilinçli olarak kapatır. Bu işlem reconnect sayılmaz, bu yüzden otomatik yeniden bağlanma tetiklenmez.">
-                  <button
-                    className="btn"
-                    disabled={!draft.id || liveState === 'offline' || liveState === 'idle'}
-                    onClick={() => draft.id && run(() => apiClient!.disconnect(draft.id))}
-                  >
-                    <Square size={15} />
-                    Disconnect
-                  </button>
-                </ActionWithHelp>
-                <ActionWithHelp help="Seçili profili yerel listeden siler. Çalışan oturum varsa önce kapatman daha temiz olur.">
-                  <button
-                    className="icon-btn icon-btn--danger"
-                    title="Delete selected profile"
-                    disabled={!draft.id}
-                    onClick={() => draft.id && run(() => apiClient!.deleteProfile(draft.id))}
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </ActionWithHelp>
+                <button
+                  className="btn btn--primary"
+                  disabled={!draft.id || isLive}
+                  onClick={() => draft.id && run(() => apiClient!.connect(draft.id))}
+                >
+                  <Play size={15} />
+                  Connect
+                </button>
+                <button
+                  className="btn"
+                  disabled={!draft.id || liveState === 'offline' || liveState === 'idle'}
+                  onClick={() => draft.id && run(() => apiClient!.disconnect(draft.id))}
+                >
+                  <Square size={15} />
+                  Disconnect
+                </button>
+                <button
+                  className="icon-btn icon-btn--danger"
+                  title="Delete selected profile"
+                  disabled={!draft.id}
+                  onClick={() => draft.id && run(() => apiClient!.deleteProfile(draft.id))}
+                >
+                  <Trash2 size={15} />
+                </button>
               </div>
             </div>
           </section>
@@ -911,120 +894,27 @@ function WindowControls({
 
   return (
     <div className="window-controls" aria-label="Window controls">
-      <ActionWithHelp help="Pencereyi küçültür. Uygulama arka planda açık kalır.">
-        <button className="window-control" title="Minimize" onClick={() => runWindowAction(api.minimizeWindow)}>
-          <Minus size={15} />
-        </button>
-      </ActionWithHelp>
-      <ActionWithHelp help="Pencereyi büyütür veya eski boyutuna döndürür. Oturumları etkilemez.">
-        <button
-          className="window-control"
-          title={isMaximized ? 'Restore' : 'Maximize'}
-          onClick={() => runWindowAction(api.toggleMaximizeWindow)}
-        >
-          {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-        </button>
-      </ActionWithHelp>
-      <ActionWithHelp help="Pencereyi sistem tepsisine küçültür; uygulama ve oturumlar arka planda çalışmaya devam eder. Tamamen kapatmak için tepsi simgesine sağ tıklayıp Çıkış’ı seçin.">
-        <button className="window-control window-control--close" title="Close" onClick={() => runWindowAction(api.closeWindow)}>
-          <X size={15} />
-        </button>
-      </ActionWithHelp>
+      <button className="window-control" title="Minimize" onClick={() => runWindowAction(api.minimizeWindow)}>
+        <Minus size={15} />
+      </button>
+      <button
+        className="window-control"
+        title={isMaximized ? 'Restore' : 'Maximize'}
+        onClick={() => runWindowAction(api.toggleMaximizeWindow)}
+      >
+        {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+      </button>
+      <button className="window-control window-control--close" title="Close" onClick={() => runWindowAction(api.closeWindow)}>
+        <X size={15} />
+      </button>
     </div>
-  );
-}
-
-function ActionWithHelp({
-  children,
-  help,
-  block = false
-}: {
-  children: React.ReactNode;
-  help: string;
-  block?: boolean;
-}) {
-  return (
-    <span className={`control-with-help ${block ? 'control-with-help--block' : ''}`}>
-      {children}
-      <HelpTip text={help} />
-    </span>
-  );
-}
-
-function HelpTip({ text }: { text: string }) {
-  const anchorRef = useRef<HTMLSpanElement>(null);
-  const tooltipId = useId();
-  const [isOpen, setIsOpen] = useState(false);
-  const [position, setPosition] = useState<{ left: number; top: number; placement: 'top' | 'bottom' } | null>(null);
-
-  const updatePosition = () => {
-    const anchor = anchorRef.current;
-    if (!anchor || typeof window === 'undefined') return;
-
-    const rect = anchor.getBoundingClientRect();
-    const maxWidth = Math.min(280, Math.max(180, window.innerWidth - 24));
-    const left = Math.min(Math.max(rect.left + rect.width / 2, 12 + maxWidth / 2), window.innerWidth - 12 - maxWidth / 2);
-    const placement = rect.top > 124 ? 'top' : 'bottom';
-    const top = placement === 'top' ? rect.top - 10 : rect.bottom + 10;
-    setPosition({ left, top, placement });
-  };
-
-  const open = () => {
-    updatePosition();
-    setIsOpen(true);
-  };
-
-  const close = () => setIsOpen(false);
-
-  useLayoutEffect(() => {
-    if (!isOpen) return undefined;
-
-    updatePosition();
-    window.addEventListener('resize', updatePosition);
-    window.addEventListener('scroll', updatePosition, true);
-    return () => {
-      window.removeEventListener('resize', updatePosition);
-      window.removeEventListener('scroll', updatePosition, true);
-    };
-  }, [isOpen, text]);
-
-  return (
-    <span
-      ref={anchorRef}
-      className="help-tip"
-      tabIndex={0}
-      aria-label={text}
-      aria-describedby={isOpen ? tooltipId : undefined}
-      onMouseEnter={open}
-      onMouseLeave={close}
-      onFocus={open}
-      onBlur={close}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') close();
-      }}
-    >
-      <CircleHelp size={13} aria-hidden="true" />
-      {isOpen && position && typeof document !== 'undefined'
-        ? createPortal(
-            <span
-              id={tooltipId}
-              className={`help-tip__bubble help-tip__bubble--${position.placement}`}
-              role="tooltip"
-              style={{ left: `${position.left}px`, top: `${position.top}px` }}
-            >
-              {text}
-            </span>,
-            document.body
-          )
-        : null}
-    </span>
   );
 }
 
 // A single command-palette-style launcher for quick commands. Replaces the old
 // row of inline buttons that grew unbounded and wrapped the command bar onto
-// extra lines. Opens a searchable, keyboard-navigable popover (portaled to body,
-// positioned like HelpTip) so the bar stays one line regardless of command count.
+// extra lines. Opens a searchable, keyboard-navigable popover (portaled to body)
+// so the bar stays one line regardless of command count.
 function QuickCommandMenu({
   commands,
   online,
@@ -1109,22 +999,20 @@ function QuickCommandMenu({
 
   return (
     <>
-      <ActionWithHelp help="Hızlı komutlar — listeyi aç, ara ve tek tıkla seçili çevrimiçi bota gönder. Operations → Command script'ten düzenlenir.">
-        <button
-          ref={anchorRef}
-          type="button"
-          className="btn btn--sm quick-menu__trigger"
-          aria-haspopup="menu"
-          aria-expanded={isOpen}
-          aria-controls={isOpen ? menuId : undefined}
-          onClick={() => (isOpen ? close() : open())}
-        >
-          <Send size={13} />
-          Quick
-          <span className="quick-menu__count">{commands.length}</span>
-          <ChevronDown size={13} aria-hidden="true" />
-        </button>
-      </ActionWithHelp>
+      <button
+        ref={anchorRef}
+        type="button"
+        className="btn btn--sm quick-menu__trigger"
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
+        aria-controls={isOpen ? menuId : undefined}
+        onClick={() => (isOpen ? close() : open())}
+      >
+        <Send size={13} />
+        Quick
+        <span className="quick-menu__count">{commands.length}</span>
+        <ChevronDown size={13} aria-hidden="true" />
+      </button>
       {isOpen && position && typeof document !== 'undefined'
         ? createPortal(
             <div
@@ -1208,18 +1096,14 @@ function ServerProfileSummary({
       <div className="panel__head">
         <span className="panel__title">Server profile</span>
         <div className="panel__actions">
-          <ActionWithHelp help="Seçili hesabın kullanıcı adı, sunucu, auth ve reconnect ayarlarını düzenleme penceresinde açar.">
-            <button className="btn btn--sm" onClick={onEdit}>
-              <Pencil size={14} />
-              Edit profile
-            </button>
-          </ActionWithHelp>
-          <ActionWithHelp help="Ekrandaki profil değişikliklerini yerel profile kaydeder. Lobby auth şifresi profil dosyasına yazılmaz.">
-            <button className="btn btn--sm" onClick={onSave}>
-              <Save size={14} />
-              Save profile
-            </button>
-          </ActionWithHelp>
+          <button className="btn btn--sm" onClick={onEdit}>
+            <Pencil size={14} />
+            Edit profile
+          </button>
+          <button className="btn btn--sm" onClick={onSave}>
+            <Save size={14} />
+            Save profile
+          </button>
         </div>
       </div>
       <div className="panel__body profile-summary__body">
@@ -1324,11 +1208,9 @@ function ProfileEditorModal({
             <Pencil size={14} />
             Server profile
           </span>
-          <ActionWithHelp help="Değişiklikleri kaydetmeden profil düzenleme penceresini kapatır.">
-            <button className="icon-btn" title="Close profile editor" onClick={onClose}>
-              <X size={16} />
-            </button>
-          </ActionWithHelp>
+          <button className="icon-btn" title="Close profile editor" onClick={onClose}>
+            <X size={16} />
+          </button>
         </div>
 
         <div className="modal__body profile-editor">
@@ -1342,7 +1224,6 @@ function ProfileEditorModal({
             </div>
             <Toggle
               label="Enabled"
-              help="Açık hesaplar Start all ile başlatılır. Kapalı hesap listede kalır ama toplu başlatmaya dahil edilmez."
               checked={workingDraft.enabled}
               onChange={(value) => setWorkingDraft({ ...workingDraft, enabled: value })}
             />
@@ -1423,7 +1304,6 @@ function ProfileEditorModal({
             <div className="toggles">
               <Toggle
                 label="Use proxy for this bot"
-                help="Bu profil bağlanırken kendi proxy socket'ini kullanır. Proxy password işletim sistemi anahtarlığıyla şifrelenip kaydedilir."
                 checked={profileProxy(workingDraft).enabled}
                 onChange={(value) => updateProxy({ enabled: value })}
               />
@@ -1499,7 +1379,6 @@ function ProfileEditorModal({
             <div className="toggles">
               <Toggle
                 label="Reconnect enabled"
-                help="Beklenmeyen kopmalarda bu profil için yeniden bağlanma denemelerini açar. Manuel Disconnect bunu tetiklemez."
                 checked={workingDraft.reconnect.enabled}
                 onChange={(value) => updateReconnect({ enabled: value })}
               />
@@ -1533,20 +1412,16 @@ function ProfileEditorModal({
         </div>
 
         <div className="modal__foot">
-          <ActionWithHelp help="Pencereyi kapatır ve düzenleme taslağını kaydetmez.">
-            <button className="btn" onClick={onClose}>
-              Close
-            </button>
-          </ActionWithHelp>
-          <ActionWithHelp help="Profil ayarlarını kaydeder. Auth password işletim sistemi anahtarlığıyla şifrelenip kaydedilir; profil JSON'una düz metin yazılmaz ve arayüze geri gönderilmez.">
-            <button
-              className="btn btn--primary"
-              onClick={() => onSave(workingDraft, { auth: authPwDirty, proxy: proxyPwDirty })}
-            >
-              <Save size={14} />
-              Save profile
-            </button>
-          </ActionWithHelp>
+          <button className="btn" onClick={onClose}>
+            Close
+          </button>
+          <button
+            className="btn btn--primary"
+            onClick={() => onSave(workingDraft, { auth: authPwDirty, proxy: proxyPwDirty })}
+          >
+            <Save size={14} />
+            Save profile
+          </button>
         </div>
       </div>
     </div>
@@ -1567,22 +1442,19 @@ function AccountRow({
   const state = session?.state ?? 'idle';
   const stateLabel = STATE_LABEL[state];
   return (
-    <div className="row-with-help">
-      <button className={`row ${selected ? 'is-selected' : ''}`} onClick={onSelect}>
-        <span className="avatar">{profile.label.slice(0, 2).toUpperCase()}</span>
-        <span className="row__copy">
-          <strong>{profile.label}</strong>
-          <span>
-            {stateLabel} · {profile.host}
-          </span>
+    <button className={`row ${selected ? 'is-selected' : ''}`} onClick={onSelect}>
+      <span className="avatar">{profile.label.slice(0, 2).toUpperCase()}</span>
+      <span className="row__copy">
+        <strong>{profile.label}</strong>
+        <span>
+          {stateLabel} · {profile.host}
         </span>
-        <span className="row__meta">
-          <i className={`dot dot--${state}`} />
-          <span>{session?.ping ? `${session.ping}ms` : '—'}</span>
-        </span>
-      </button>
-      <HelpTip text="Bu satır profili seçer. Sağdaki durum noktası son bağlantı halini, ping değeri varsa gecikmeyi gösterir." />
-    </div>
+      </span>
+      <span className="row__meta">
+        <i className={`dot dot--${state}`} />
+        <span>{session?.ping ? `${session.ping}ms` : '—'}</span>
+      </span>
+    </button>
   );
 }
 
@@ -1635,27 +1507,23 @@ function CommandBar({
             }
           }}
         />
-        <ActionWithHelp help="Yazdığın önek için sunucunun tab-completion önerilerini ister (Tab tuşu da çalışır).">
-          <button
-            type="button"
-            className="btn btn--sm"
-            disabled={!online || !value.trim()}
-            onClick={() => onComplete(value)}
-          >
-            Complete
-          </button>
-        </ActionWithHelp>
-        <ActionWithHelp help="Komutu/mesajı seçili çevrimiçi oturuma gönderir (Enter tuşu da çalışır).">
-          <button
-            type="button"
-            className="btn btn--primary btn--sm"
-            disabled={!canSend}
-            onClick={() => void onSend()}
-          >
-            <Send size={14} />
-            Send
-          </button>
-        </ActionWithHelp>
+        <button
+          type="button"
+          className="btn btn--sm"
+          disabled={!online || !value.trim()}
+          onClick={() => onComplete(value)}
+        >
+          Complete
+        </button>
+        <button
+          type="button"
+          className="btn btn--primary btn--sm"
+          disabled={!canSend}
+          onClick={() => void onSend()}
+        >
+          <Send size={14} />
+          Send
+        </button>
         <span className="command-bar__sep" aria-hidden />
         {runnable.length > 0 ? (
           <QuickCommandMenu commands={runnable} online={online} onRun={onQuickScript} />
@@ -1678,7 +1546,6 @@ function CommandBar({
               {item}
             </button>
           ))}
-          <HelpTip text="Öneriye tıklayınca komut kutusundaki son kelimeyi tamamlar." />
         </div>
       ) : null}
     </section>
@@ -1837,12 +1704,10 @@ function OperationsPanel({
           Operations
         </span>
         <div className="panel__actions">
-          <ActionWithHelp help="Modül ayarlarını seçili profile kaydeder. Discord webhook ve bot token runtime-only kalır.">
-            <button className="btn btn--sm" onClick={onSave}>
-              <Save size={14} />
-              Save modules
-            </button>
-          </ActionWithHelp>
+          <button className="btn btn--sm" onClick={onSave}>
+            <Save size={14} />
+            Save modules
+          </button>
         </div>
       </div>
       <div className="panel__body operations__body">
@@ -1880,7 +1745,6 @@ function OperationsPanel({
               <span className="panel__title">
                 <PackageOpen size={14} />
                 Chest storage
-                <HelpTip text="Açıkken farmlar ürünü çıktı sandığına boşaltır ve tohum/blok gibi malzemeyi ikmal sandığından çeker. Envanter dolunca durmak yerine boşaltmaya gider; sandık dolu/eksikse yere hiçbir şey dökmeden duraklar ve Discord'dan bildirir. Kaktüs kendi hopper hattını kullanır." />
               </span>
               <Toggle label="Aktif" checked={storage.enabled} onChange={(enabled) => updateStorage({ enabled })} />
             </div>
@@ -1950,14 +1814,12 @@ function OperationsPanel({
             <div className="module-card__body">
               <Toggle
                 label="Otomatik farm kur"
-                help="Su + huni hatlı ikiz sıra havuz farmı kurar: kaktüsler ortak çit hattına büyüyüp kırılır, drop'lar su ile sandığa taşınır. Bot batı kenarda durmalı; farm doğuya (+X) 10, kuzeye (+Z) sıra başına 4 blok uzar."
                 checked={modules.cactusFarm.build}
                 onChange={(value) => updateCactus({ build: value })}
               />
               {!modules.cactusFarm.build && (
                 <Slider
                   label="Layers"
-                  help="Kaktüs farm için üst üste kurulacak kat sayısıdır (yalnızca otomatik farm kapalıyken)."
                   min={1}
                   max={12}
                   value={modules.cactusFarm.layers}
@@ -1968,7 +1830,6 @@ function OperationsPanel({
               {!modules.cactusFarm.build && (
                 <Slider
                   label="Radius"
-                  help="Botun bulunduğu noktanın çevresinde kullanılacak dikim yarıçapıdır."
                   min={1}
                   max={8}
                   value={modules.cactusFarm.radius}
@@ -1979,7 +1840,6 @@ function OperationsPanel({
               {modules.cactusFarm.build && (
                 <Slider
                   label="Sıra çifti"
-                  help="Her sıra çifti 6 kaktüs ekler ve farmı kuzeye 4 blok uzatır (~1.5-2 kaktüs/saat/bitki)."
                   min={1}
                   max={8}
                   value={modules.cactusFarm.rowPairs}
@@ -1990,7 +1850,6 @@ function OperationsPanel({
               {modules.cactusFarm.build && (
                 <Slider
                   label="Sütun"
-                  help="Farmı doğuya doğru yan yana kopyalar; her sütunun kendi sandığı ve huni hattı olur."
                   min={1}
                   max={4}
                   value={modules.cactusFarm.columns}
@@ -2001,7 +1860,6 @@ function OperationsPanel({
               {modules.cactusFarm.build && (
                 <Slider
                   label="Katman (yeraltı, deneysel)"
-                  help="Ek katmanlar zemine AŞAĞI doğru kazılır: her katman 5 blokluk bir oda + merdiven kazar, kendi havuzunu kurar. Zeminin altında en az katman×6 blok dolu alan olmalı. Büyük kazı uzun sürer; bot koparsa otomatik devam eder, kalan hücreleri ikinci bir Start onarır. (Yukarı istifleme Paper'ın yerleştirme doğrulaması yüzünden desteklenmez.)"
                   min={1}
                   max={3}
                   value={modules.cactusFarm.basinLayers}
@@ -2049,7 +1907,6 @@ function OperationsPanel({
               {modules.cactusFarm.build && (
                 <Toggle
                   label="Toplama sistemi"
-                  help="Huni hattı + sandık + su tabakasını da kurar (kapatılırsa yalnızca kuru havuz inşa edilir). Su için sıra çifti başına ~3 kova gerekir."
                   checked={modules.cactusFarm.buildCollection}
                   onChange={(value) => updateCactus({ buildCollection: value })}
                 />
@@ -2088,7 +1945,6 @@ function OperationsPanel({
               </label>
               <Slider
                 label="Radius"
-                help="Hasat taraması için bot çevresindeki yarıçap."
                 min={1}
                 max={12}
                 value={modules.cropFarm.radius}
@@ -2120,25 +1976,21 @@ function OperationsPanel({
               <div className="toggles toggles--inline">
                 <Toggle
                   label="Tarlayı kur"
-                  help="Hasattan önce toprağı çapalar, merkeze su koyar ve tohumları diker. Yalnızca buğday/havuç/patates/pancar için çalışır."
                   checked={modules.cropFarm.build}
                   onChange={(value) => updateCrop({ build: value })}
                 />
                 <Toggle
                   label="Otomatik çapala"
-                  help="İnşa sırasında mevcut toprağı/çimi otomatik olarak tarlaya (farmland) çevirir."
                   checked={modules.cropFarm.autoTill}
                   onChange={(value) => updateCrop({ autoTill: value })}
                 />
                 <Toggle
                   label="Replant"
-                  help="Hasattan sonra uygun tohum/ürün varsa aynı bloğa yeniden dikmeyi dener."
                   checked={modules.cropFarm.replant}
                   onChange={(value) => updateCrop({ replant: value })}
                 />
                 <Toggle
                   label="Collect stats"
-                  help="Hasat edilen ürünleri canlı istatistik olarak sayar."
                   checked={modules.cropFarm.collectDrops}
                   onChange={(value) => updateCrop({ collectDrops: value })}
                 />
@@ -2151,7 +2003,6 @@ function OperationsPanel({
               <span className="panel__title">
                 <Boxes size={14} />
                 Area operation
-                <HelpTip text="Sınırlı bir 3B bölgeyi bir kez baştan sona kazar (boşaltır) ya da blokla doldurur; işlem %100'e ulaşınca biter. Sürekli farm için Generator'ı kullan." />
               </span>
               <OperationButtons
                 kind="area"
@@ -2172,7 +2023,6 @@ function OperationsPanel({
                 <label className="field">
                   <span className="field__label">
                     Koordinat
-                    <HelpTip text="Göreli: From/To, botun anlık konumuna eklenir (bot nereye giderse bölge oraya taşınır). Mutlak: dünya koordinatlarını doğrudan kullanır." />
                   </span>
                   <select
                     value={modules.area.coords}
@@ -2214,13 +2064,11 @@ function OperationsPanel({
               <div className="toggles toggles--inline">
                 <Toggle
                   label="Hollow (kabuk)"
-                  help="Açıkken sadece kutunun dış yüzeylerine dokunur — içi boş oda, sığınak veya duvar yapmak için. Kapalıyken tüm bloklar dolu/kazılır."
                   checked={modules.area.hollow}
                   onChange={(value) => updateArea({ hollow: value })}
                 />
                 <Toggle
                   label="Yürü / pathfind"
-                  help="Açıkken bot erişemediği her bloğa yürür (büyük alanlar için). Kapalıyken yalnızca durduğu yerden erişebildiği blokları işler."
                   checked={modules.area.walk}
                   onChange={(value) => updateArea({ walk: value })}
                 />
@@ -2234,7 +2082,6 @@ function OperationsPanel({
               <span className="panel__title">
                 <Pickaxe size={14} />
                 Generator
-                <HelpTip text="Sabit dur, bir veya birkaç yeniden-oluşan bloğu (taş/cobblestone üreteci) sonsuz döngüde kır → yeniden oluşmasını bekle → tekrar kır. Bir kez biten kazı/dolgu işi için Area'yı kullan." />
               </span>
               <OperationButtons
                 kind="generator"
@@ -2271,7 +2118,6 @@ function OperationsPanel({
               </div>
               <Toggle
                 label="Yürü / pathfind"
-                help="Genelde kapalı tut: AFK üreteci farmında bot tek yerde durur. Slotlar erişim dışındaysa açarsan bot her slota yürür."
                 checked={modules.generator.walk}
                 onChange={(value) => updateGenerator({ walk: value })}
               />
@@ -2300,7 +2146,6 @@ function OperationsPanel({
             <div className="module-card__body module-card__body--stack">
               <Toggle
                 label="Loop script"
-                help="Açıkken script adımları son komuttan sonra başa döner."
                 checked={modules.script.loop}
                 onChange={(value) => updateScript({ loop: value })}
               />
@@ -2339,7 +2184,6 @@ function OperationsPanel({
               <div className="module-card__actions">
                 <Toggle
                   label="Enabled"
-                  help="Sunucudan gelen mesajlarda eşleşme yakalarsa seçili bot otomatik yanıt veya komut gönderir."
                   checked={modules.autoResponse.enabled}
                   onChange={(value) => updateAutoResponse({ enabled: value })}
                 />
@@ -2362,7 +2206,6 @@ function OperationsPanel({
               <div className="module-card__actions">
                 <Toggle
                   label="Enabled"
-                  help="Webhook ve bot token bu runtime oturumunda kullanılır; profile JSON içine yazılmaz."
                   checked={modules.discord.enabled}
                   onChange={(value) => updateDiscord({ enabled: value })}
                 />
@@ -2407,13 +2250,11 @@ function OperationsPanel({
               <div className="toggles toggles--inline">
                 <Toggle
                   label="Notify chat"
-                  help="Sunucudan gelen chat satırlarını Discord webhook kanalına yollar."
                   checked={modules.discord.notifyChat}
                   onChange={(value) => updateDiscord({ notifyChat: value })}
                 />
                 <Toggle
                   label="Remote commands"
-                  help="Bot token ve channel ID varsa Discord kanalından prefix ile gelen komutları oyuna yollar."
                   checked={modules.discord.pollCommands}
                   onChange={(value) => updateDiscord({ pollCommands: value })}
                 />
@@ -2442,18 +2283,14 @@ function OperationButtons({
   const title = OPERATION_TITLES[kind];
   return (
     <div className="operation-buttons">
-      <ActionWithHelp help={`${title} modülünü seçili çevrimiçi bot üzerinde başlatır.`}>
-        <button className="btn btn--sm btn--primary" disabled={running} aria-label={`Start ${title}`} onClick={() => void onStart()}>
-          <Play size={13} />
-          Start
-        </button>
-      </ActionWithHelp>
-      <ActionWithHelp help={`${title} modülünü durdurur ve varsa bekleyen iş kuyruğunu temizler.`}>
-        <button className="btn btn--sm" disabled={!running} aria-label={`Stop ${title}`} onClick={() => void onStop()}>
-          <Square size={13} />
-          Stop
-        </button>
-      </ActionWithHelp>
+      <button className="btn btn--sm btn--primary" disabled={running} aria-label={`Start ${title}`} onClick={() => void onStart()}>
+        <Play size={13} />
+        Start
+      </button>
+      <button className="btn btn--sm" disabled={!running} aria-label={`Stop ${title}`} onClick={() => void onStop()}>
+        <Square size={13} />
+        Stop
+      </button>
     </div>
   );
 }
@@ -2677,12 +2514,10 @@ function InventoryPanel({
             </strong>
           </div>
           {interactive && inventory?.heldItem ? (
-            <ActionWithHelp help="Eldeki item'ı kullan (yerleştir / fırlat / aktive et).">
-              <button type="button" className="btn btn--sm" onClick={() => act({ action: 'useHeld' })}>
-                <Hammer size={13} />
-                Kullan
-              </button>
-            </ActionWithHelp>
+            <button type="button" className="btn btn--sm" onClick={() => act({ action: 'useHeld' })}>
+              <Hammer size={13} />
+              Kullan
+            </button>
           ) : null}
         </div>
 
@@ -2914,20 +2749,18 @@ function CapturePositionButton({
 }) {
   const disabled = !position;
   return (
-    <ActionWithHelp help="Botun şu anki dünya konumunu bu köşeye yazar. Bot çevrimiçi olmalı.">
-      <button
-        type="button"
-        className="btn btn--xs"
-        disabled={disabled}
-        onClick={() => {
-          if (!position) return;
-          onCapture({ x: Math.round(position.x), y: Math.round(position.y), z: Math.round(position.z) });
-        }}
-      >
-        <Crosshair size={12} />
-        Konumum
-      </button>
-    </ActionWithHelp>
+    <button
+      type="button"
+      className="btn btn--xs"
+      disabled={disabled}
+      onClick={() => {
+        if (!position) return;
+        onCapture({ x: Math.round(position.x), y: Math.round(position.y), z: Math.round(position.z) });
+      }}
+    >
+      <Crosshair size={12} />
+      Konumum
+    </button>
   );
 }
 
@@ -2944,25 +2777,23 @@ function CaptureChestButton({
 }) {
   const [busy, setBusy] = useState(false);
   return (
-    <ActionWithHelp help="Botun baktığı sandığı (yoksa yakınındaki sandığı) yakalayıp bu role yazar. Bot çevrimiçi olmalı.">
-      <button
-        type="button"
-        className="btn btn--xs"
-        disabled={!online || busy}
-        onClick={async () => {
-          setBusy(true);
-          try {
-            const captured = await onRequest(profileId);
-            if (captured) onCapture({ x: Math.round(captured.x), y: Math.round(captured.y), z: Math.round(captured.z) });
-          } finally {
-            setBusy(false);
-          }
-        }}
-      >
-        <Crosshair size={12} />
-        {busy ? '…' : 'Sandığı yakala'}
-      </button>
-    </ActionWithHelp>
+    <button
+      type="button"
+      className="btn btn--xs"
+      disabled={!online || busy}
+      onClick={async () => {
+        setBusy(true);
+        try {
+          const captured = await onRequest(profileId);
+          if (captured) onCapture({ x: Math.round(captured.x), y: Math.round(captured.y), z: Math.round(captured.z) });
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <Crosshair size={12} />
+      {busy ? '…' : 'Sandığı yakala'}
+    </button>
   );
 }
 
@@ -3006,7 +2837,6 @@ function GeneratorSlotEditor({
     <div className="slot-editor">
       <div className="slot-editor__head">
         <span className="field__label">Üreteç blokları</span>
-        <HelpTip text="Döngüde kırılacak blokların bota göre konumu (X/Y/Z offset). Klasik dörtlü taş üreteci için botun dört yanı; tek üreteç için tek satır yeterli." />
         <span className="tag">{slots.length}/{MAX_GENERATOR_SLOTS}</span>
       </div>
       {slots.length === 0 ? (
@@ -3053,18 +2883,15 @@ function GeneratorSlotEditor({
                 >
                   <Trash2 size={14} />
                 </button>
-                <HelpTip text="Bu üreteç bloğunu listeden kaldırır. Her satır, döngüde kırılan ayrı bir bloğu temsil eder." />
               </div>
             </div>
           ))}
         </div>
       )}
-      <ActionWithHelp help="Kırılacak yeni bir üreteç bloğu ekler (varsayılan: botun bir blok kuzeyi). En fazla 16 slot.">
-        <button type="button" className="btn btn--sm" disabled={slots.length >= MAX_GENERATOR_SLOTS} onClick={add}>
-          <Plus size={13} />
-          Blok ekle
-        </button>
-      </ActionWithHelp>
+      <button type="button" className="btn btn--sm" disabled={slots.length >= MAX_GENERATOR_SLOTS} onClick={add}>
+        <Plus size={13} />
+        Blok ekle
+      </button>
     </div>
   );
 }
@@ -3088,67 +2915,56 @@ function RoutinePanel({
     <section className="panel">
       <div className="panel__head">
         <span className="panel__title">AFK routine</span>
-        <ActionWithHelp help="AFK routine ve reconnect ayarlarını seçili profile kaydeder.">
-          <button className="btn btn--sm" onClick={onSave}>
-            <Save size={14} />
-            Save
-          </button>
-        </ActionWithHelp>
+        <button className="btn btn--sm" onClick={onSave}>
+          <Save size={14} />
+          Save
+        </button>
       </div>
       <div className="panel__body routine__body">
         <div className="routine__col routine__col--main">
           <div className="toggles">
           <Toggle
             label="Random look"
-            help="Rutin çalıştığında kamerayı küçük rastgele açılarla çevirir. Hareket komutu değildir, sadece bakış yönünü değiştirir."
             checked={routine.randomLook}
             onChange={(value) => updateRoutine({ randomLook: value })}
           />
           <Toggle
             label="Auto-jump"
-            help="Rutin seçtiğinde jump tuşuna kısa bir pulse gönderir. Sürekli zıplamaz; sadece seçilen rutin adımında çalışır."
             checked={routine.autoJump}
             onChange={(value) => updateRoutine({ autoJump: value })}
           />
           <Toggle
             label="Sneak"
-            help="Rutin seçtiğinde sneak durumunu kısa süre açıp kapatır. Diğer hareket kontrolleriyle birlikte rastgele sırada çalışabilir."
             checked={routine.sneakPulse}
             onChange={(value) => updateRoutine({ sneakPulse: value })}
           />
           <Toggle
             label="Swing"
-            help="Rutin seçtiğinde sağ kol swing komutu gönderir. Blok kırma veya hedef seçme davranışı eklemez."
             checked={routine.swingArm}
             onChange={(value) => updateRoutine({ swingArm: value })}
           />
           <Toggle
             label="Chat messages"
-            help="Açıkken listedeki Türkçe mesajlardan birini gönderir. Birden fazla mesaj varsa aynı mesajı art arda tekrarlamamaya çalışır."
             checked={routine.chatHeartbeat}
             onChange={(value) => updateRoutine({ chatHeartbeat: value })}
           />
           <Toggle
             label="Auto-respawn"
-            help="Oturum ölürse respawn isteği gönderir. Sunucu izin verirse karakter tekrar doğar ve rutin devam edebilir."
             checked={routine.autoRespawn}
             onChange={(value) => updateRoutine({ autoRespawn: value })}
           />
           <Toggle
             label="Auto-eat"
-            help="Hunger belirlediğin eşik altına inerse güvenli yiyecek seçip yemeye çalışır. Zararlı yiyecekleri bilerek atlar."
             checked={routine.autoEat}
             onChange={(value) => updateRoutine({ autoEat: value })}
           />
           <Toggle
             label="Reconnect"
-            help="Beklenmeyen kopmalarda bu hesap için yeniden bağlanma denemelerini açar. Manuel kapatma reconnect başlatmaz."
             checked={draft.reconnect.enabled}
             onChange={(value) => updateReconnect({ enabled: value })}
           />
           <Toggle
             label="Enabled"
-            help="Bu profilin Start all ile başlatılıp başlatılmayacağını belirler. Tekli Connect düğmesi yine seçili profili kullanır."
             checked={draft.enabled}
             onChange={(value) => onChange({ ...draft, enabled: value })}
           />
@@ -3156,7 +2972,6 @@ function RoutinePanel({
           <div className="routine__sliders">
           <Slider
             label="Base interval"
-            help="AFK routine için temel bekleme süresidir. Her rutin adımı bu sürenin etrafında planlanır."
             min={3000}
             max={90000}
             step={1000}
@@ -3166,7 +2981,6 @@ function RoutinePanel({
           />
           <Slider
             label="Interval jitter"
-            help="Base interval üzerine rastgele sapma ekler. Yüzde büyüdükçe rutin adımları daha değişken aralıklarla çalışır."
             min={0}
             max={80}
             value={routine.jitterPercent}
@@ -3175,7 +2989,6 @@ function RoutinePanel({
           />
           <Slider
             label="Eat below"
-            help="Hunger bu değere eşit veya altına inerse auto-eat güvenli yiyecek arar ve yemeye çalışır."
             min={1}
             max={19}
             value={routine.eatAtFood}
@@ -3184,7 +2997,6 @@ function RoutinePanel({
           />
           <Slider
             label="Pause below"
-            help="Hunger bu değere kadar düşer ve güvenli yiyecek yoksa AFK hareketleri duraklar. Hunger toparlanınca rutin devam eder."
             min={0}
             max={routine.eatAtFood}
             value={routine.pauseAtFood}
@@ -3258,11 +3070,9 @@ function SettingsModal({
             <Settings size={14} />
             Settings
           </span>
-          <ActionWithHelp help="Ayar penceresini kapatır. Değişiklikler zaten anlık olarak uygulanır.">
-            <button className="icon-btn" title="Close" onClick={onClose}>
-              <X size={16} />
-            </button>
-          </ActionWithHelp>
+          <button className="icon-btn" title="Close" onClick={onClose}>
+            <X size={16} />
+          </button>
         </div>
 
         <div className="modal__body">
@@ -3271,7 +3081,6 @@ function SettingsModal({
             <div className="toggles">
               <Toggle
                 label="Auto-start enabled accounts on launch"
-                help="Uygulama açıldığında Enabled olan profilleri otomatik başlatır. Hesaplar connect stagger süresine göre sırayla bağlanır."
                 checked={settings.autoStartOnLaunch}
                 onChange={(value) => onChange({ autoStartOnLaunch: value })}
               />
@@ -3293,19 +3102,16 @@ function SettingsModal({
             <div className="toggles">
               <Toggle
                 label="Confirm before Stop all"
-                help="Stop all basıldığında tüm oturumları kapatmadan önce onay sorar. Yanlışlıkla toplu kapatmayı önler."
                 checked={settings.confirmStopAll}
                 onChange={(value) => onChange({ confirmStopAll: value })}
               />
               <Toggle
                 label="Show chat timestamps"
-                help="Chat console içinde mesajların saat sütununu gösterir veya gizler. Mesaj içeriğini değiştirmez."
                 checked={settings.showChatTimestamps}
                 onChange={(value) => onChange({ showChatTimestamps: value })}
               />
               <Toggle
                 label="Compact density"
-                help="Panel boşluklarını sıkılaştırır. Küçük ekranlarda daha fazla satır görmeyi kolaylaştırır."
                 checked={settings.compactDensity}
                 onChange={(value) => onChange({ compactDensity: value })}
               />
@@ -3318,7 +3124,6 @@ function SettingsModal({
               <div className="toggles">
                 <Toggle
                   label="Minimize to tray on close"
-                  help="Kapatma (X) düğmesine basıldığında uygulamayı kapatmak yerine sistem tepsisine küçültür; oturumlar arka planda çalışmaya devam eder. Tepsi simgesine tıklayarak geri açabilirsin. Kapalıyken X uygulamayı tamamen kapatır."
                   checked={settings.minimizeToTrayOnClose}
                   onChange={(value) => onChange({ minimizeToTrayOnClose: value })}
                 />
@@ -3331,7 +3136,6 @@ function SettingsModal({
             <div className="toggles">
               <Toggle
                 label="Reconnect enabled"
-                help="Yeni oluşturulan hesaplarda reconnect varsayılanını açık yapar. Mevcut profillerin kendi ayarını değiştirmez."
                 checked={reconnect.enabled}
                 onChange={(value) => setReconnect({ enabled: value })}
               />
@@ -3377,24 +3181,18 @@ function SettingsModal({
         </div>
 
         <div className="modal__foot">
-          <ActionWithHelp help="Tüm global settings değerlerini varsayılana döndürür. Profil içindeki hesap ayarlarını silmez.">
-            <button className="btn" onClick={() => onChange(structuredClone(DEFAULT_SETTINGS))}>
-              <RotateCcw size={14} />
-              Reset defaults
-            </button>
-          </ActionWithHelp>
+          <button className="btn" onClick={() => onChange(structuredClone(DEFAULT_SETTINGS))}>
+            <RotateCcw size={14} />
+            Reset defaults
+          </button>
           <span className="modal__foot-spacer" />
-          <ActionWithHelp help="Profil JSON ve Microsoft auth session gibi yerel app dosyalarının bulunduğu klasörü açar.">
-            <button className="btn" onClick={onOpenData}>
-              <FolderOpen size={14} />
-              Open data folder
-            </button>
-          </ActionWithHelp>
-          <ActionWithHelp help="Settings penceresini kapatır. Değişiklikler kapatmadan önce zaten kaydedilmiş olur.">
-            <button className="btn btn--primary" onClick={onClose}>
-              Done
-            </button>
-          </ActionWithHelp>
+          <button className="btn" onClick={onOpenData}>
+            <FolderOpen size={14} />
+            Open data folder
+          </button>
+          <button className="btn btn--primary" onClick={onClose}>
+            Done
+          </button>
         </div>
       </div>
     </div>
@@ -3461,7 +3259,6 @@ function StartupFlowPanel({
       <div className="joinflow__head">
         <Toggle
           label="Join flow"
-          help="Sunucu önce lobby'ye alıyorsa açılır. Bağlantıdan sonra auth/register, transfer ve opsiyonel flow komutları sırayla gönderilir."
           checked={startup.enabled}
           onChange={(value) => updateStartup({ enabled: value })}
         />
@@ -3724,17 +3521,14 @@ function ScriptStepList({
             >
               <Trash2 size={14} />
             </button>
-            <HelpTip text="Komutu sırada yukarı/aşağı taşı veya listeden kaldır. Komutlar yukarıdan aşağıya sırayla çalışır." />
           </div>
         </div>
       ))}
       {steps.length === 0 && emptyHint ? <p className="step-list__empty">{emptyHint}</p> : null}
-      <ActionWithHelp help="Listeye yeni bir komut satırı ekler. Label boş bırakılırsa otomatik adlandırılır; boş satırlar kaydederken atılır.">
-        <button type="button" className="btn btn--sm step-list__add" onClick={addStep}>
-          <Plus size={13} />
-          {addLabel}
-        </button>
-      </ActionWithHelp>
+      <button type="button" className="btn btn--sm step-list__add" onClick={addStep}>
+        <Plus size={13} />
+        {addLabel}
+      </button>
     </div>
   );
 }
@@ -3850,7 +3644,6 @@ function AutoResponseList({
             >
               <Trash2 size={14} />
             </button>
-            <HelpTip text="Kuralı yukarı/aşağı taşı veya sil. Soldaki kutu kuralı açıp kapatır." />
           </div>
         </div>
       ))}
@@ -3859,12 +3652,10 @@ function AutoResponseList({
           Henüz kural yok — eşleşen sunucu mesajına otomatik yanıt/komut vermek için bir satır ekle.
         </p>
       ) : null}
-      <ActionWithHelp help="Yeni bir otomatik yanıt kuralı ekler. Eşleşme metni gelen mesajda (büyük/küçük harf duyarsız) geçerse yanıt/komut gönderilir; bekleme süresi tekrarları sınırlar.">
-        <button type="button" className="btn btn--sm rule-list__add" onClick={addRule}>
-          <Plus size={13} />
-          Add rule
-        </button>
-      </ActionWithHelp>
+      <button type="button" className="btn btn--sm rule-list__add" onClick={addRule}>
+        <Plus size={13} />
+        Add rule
+      </button>
     </div>
   );
 }
@@ -3880,12 +3671,10 @@ function applyCompletion(input: string, match: string): string {
 
 function Toggle({
   label,
-  help,
   checked,
   onChange
 }: {
   label: string;
-  help?: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
 }) {
@@ -3896,7 +3685,6 @@ function Toggle({
         <span className="toggle__track" aria-hidden />
         <span className="toggle__label">{label}</span>
       </label>
-      {help ? <HelpTip text={help} /> : null}
     </div>
   );
 }
@@ -3908,7 +3696,6 @@ function Slider({
   step,
   value,
   display,
-  help,
   onChange
 }: {
   label: string;
@@ -3917,7 +3704,6 @@ function Slider({
   step?: number;
   value: number;
   display: string;
-  help?: string;
   onChange: (value: number) => void;
 }) {
   const inputId = useId();
@@ -3925,12 +3711,9 @@ function Slider({
   return (
     <div className="slider">
       <span className="slider__top">
-        <span className="slider__label-wrap">
-          <label className="field__label" htmlFor={inputId}>
-            {label}
-          </label>
-          {help ? <HelpTip text={help} /> : null}
-        </span>
+        <label className="field__label" htmlFor={inputId}>
+          {label}
+        </label>
         <strong>{display}</strong>
       </span>
       <input
